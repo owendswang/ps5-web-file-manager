@@ -12,7 +12,7 @@ let hoverPaused = false;
 let hoverResumeTimer = 0;
 let L = {};
 
-const APP_VERSION = "v0.1";
+const APP_VERSION = "v0.2";
 const LAST_PATH_KEY = "ps5-web-file-mgr:last-path";
 
 const filesEl = document.getElementById("files");
@@ -318,7 +318,7 @@ function renderTaskName(el, task) {
   const state = document.createElement("span");
   state.className = "task-name-state";
   state.textContent = stateLabel(task.state);
-  el.append(op, subject, state);
+  appendChildren(el, op, subject, state);
 }
 
 function renderClipboard() {
@@ -387,6 +387,43 @@ function cssEscape(value) {
   return String(value).replace(/["\\]/g, "\\$&");
 }
 
+function appendChildren(parent) {
+  for (let i = 1; i < arguments.length; i++) {
+    parent.appendChild(arguments[i]);
+  }
+}
+
+function setClass(el, name, enabled) {
+  if (enabled) el.classList.add(name);
+  else el.classList.remove(name);
+}
+
+function bindPress(el, fn) {
+  let handled = false;
+  const run = event => {
+    if (handled) {
+      if (event && event.preventDefault) event.preventDefault();
+      return;
+    }
+    handled = true;
+    if (event && event.preventDefault) event.preventDefault();
+    fn();
+    setTimeout(() => {
+      handled = false;
+    }, 350);
+  };
+  el.addEventListener("mousedown", run);
+  el.addEventListener("click", run);
+}
+
+function findRowFromTarget(target) {
+  while (target && target !== contentEl) {
+    if (target.tagName === "TR" && target.getAttribute("data-path") !== null) return target;
+    target = target.parentNode;
+  }
+  return null;
+}
+
 function togglePath(path, checked) {
   if (checked) selected.add(path);
   else selected.delete(path);
@@ -410,8 +447,8 @@ function render() {
     const isParent = item.type === "parent";
     const tr = document.createElement("tr");
     tr.dataset.path = item.path;
-    tr.classList.toggle("selected", !isParent && selected.has(item.path));
-    tr.classList.toggle("focused", focusedPath === item.path);
+    setClass(tr, "selected", !isParent && selected.has(item.path));
+    setClass(tr, "focused", focusedPath === item.path);
 
     const selectTd = document.createElement("td");
     selectTd.className = "select-cell";
@@ -448,10 +485,11 @@ function render() {
       if (isParent || item.type === "d") load(item.path);
       else togglePath(item.path, !selected.has(item.path));
     });
-    nameBtn.append(icon, nameText);
+    appendChildren(nameBtn, icon, nameText);
     nameTd.appendChild(nameBtn);
 
-    tr.append(
+    appendChildren(
+      tr,
       selectTd,
       nameTd,
       classCell("type-col", isParent ? t("parent") : item.type === "d" ? t("dir") : t("file")),
@@ -618,7 +656,7 @@ function renderPendingOverlay(text) {
   const amount = document.createElement("div");
   amount.className = "task-amount";
   amount.textContent = t("pleaseWait");
-  head.append(name, amount);
+  appendChildren(head, name, amount);
 
   const current = document.createElement("div");
   current.className = "task-current";
@@ -629,12 +667,12 @@ function renderPendingOverlay(text) {
   const progressText = document.createElement("div");
   progressText.className = "progress-text";
   progressText.textContent = t("checking");
-  progress.append(progressText);
+  progress.appendChild(progressText);
 
   const cancel = document.createElement("button");
   cancel.className = "danger";
   cancel.textContent = t("cancel");
-  cancel.addEventListener("click", () => {
+  bindPress(cancel, () => {
     if (pendingAbortController) pendingAbortController.abort();
     pendingAbortController = null;
     pendingOverlayText = "";
@@ -643,7 +681,7 @@ function renderPendingOverlay(text) {
     setBusy(false);
   });
 
-  div.append(head, current, progress, cancel);
+  appendChildren(div, head, current, progress, cancel);
   tasksEl.appendChild(div);
 }
 
@@ -737,7 +775,7 @@ function renderTasks(tasks) {
   const name = document.createElement("div");
   name.className = "task-name";
   renderTaskName(name, task);
-  head.append(name);
+  head.appendChild(name);
 
   const current = document.createElement("div");
   current.className = "task-current";
@@ -751,7 +789,7 @@ function renderTasks(tasks) {
   progressItem.textContent = t("progressLabel") + ": " + formatSize(done) + " / " + formatSize(total);
   const etaItem = document.createElement("div");
   etaItem.textContent = t("etaLabel") + ": " + averageEta(task, done, total);
-  meta.append(speedItem, progressItem, etaItem);
+  appendChildren(meta, speedItem, progressItem, etaItem);
 
   const progress = document.createElement("div");
   progress.className = "progress";
@@ -761,13 +799,13 @@ function renderTasks(tasks) {
   const progressText = document.createElement("div");
   progressText.className = "progress-text";
   progressText.textContent = isPreparing ? t("preparing") : isFinishing ? t("finishing") : total ? pct + "%" : stateLabel(task.state);
-  progress.append(bar, progressText);
+  appendChildren(progress, bar, progressText);
 
   const cancel = document.createElement("button");
   cancel.className = "danger";
   cancel.textContent = task.cancel_requested ? t("canceling") : t("cancel");
   cancel.disabled = task.cancel_requested;
-  cancel.addEventListener("click", () => {
+  bindPress(cancel, () => {
     if (confirm(t("cancelTaskConfirm", { label: opLabel(task.op) }))) {
       requestTaskCancel(task.id);
       api("/api/cancel", { id: task.id }).then(pollTasks).catch(err => {
@@ -777,9 +815,9 @@ function renderTasks(tasks) {
     }
   });
 
-  if (isDelete) div.append(head, current, cancel);
-  else if (total && !isFinishing) div.append(head, current, meta, progress, cancel);
-  else div.append(head, current, progress, cancel);
+  if (isDelete) appendChildren(div, head, current, cancel);
+  else if (total && !isFinishing) appendChildren(div, head, current, meta, progress, cancel);
+  else appendChildren(div, head, current, progress, cancel);
   tasksEl.appendChild(div);
 }
 
@@ -839,7 +877,9 @@ function actionDelete() {
   const items = selectedEntries();
   const paths = items.map(item => item.path);
   const target = itemTitle(items);
-  if (!confirm(t("deleteConfirm", { name: target }))) return;
+  const confirmKey = items.some(item => item.type === "d") ?
+    "deleteConfirmRecursive" : "deleteConfirm";
+  if (!confirm(t(confirmKey, { name: target }))) return;
   runAction(t("delete"), () => api("/api/delete", { paths: paths.join("\n") }));
 }
 
@@ -873,8 +913,8 @@ selectAllEl.addEventListener("change", () => {
   render();
 });
 contentEl.addEventListener("mousemove", event => {
-  const row = event.target.closest("tr[data-path]");
-  hoverPath(row ? row.dataset.path : null);
+  const row = findRowFromTarget(event.target);
+  hoverPath(row ? row.getAttribute("data-path") : null);
 });
 contentEl.addEventListener("mouseleave", () => hoverPath(null));
 contentEl.addEventListener("scroll", () => {

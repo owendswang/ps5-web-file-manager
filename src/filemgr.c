@@ -9,10 +9,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/types.h>
+#ifdef __linux__
+#include <sys/vfs.h>
+#else
+#include <sys/mount.h>
+#endif
 #include <time.h>
 #include <unistd.h>
 
@@ -580,6 +584,7 @@ ignore_chmod_error(int err) {
   return err == ENOTSUP || err == EPERM || err == EINVAL || err == EROFS;
 }
 
+#ifndef __linux__
 static int
 fs_type_has_unix_modes(const char *type) {
   return strcmp(type, "exfat") &&
@@ -588,25 +593,36 @@ fs_type_has_unix_modes(const char *type) {
          strcmp(type, "fat") &&
          strcmp(type, "vfat");
 }
+#endif
 
 static int
 path_has_unix_modes(const char *path) {
+#ifdef __linux__
+  (void)path;
+  return 1;
+#else
   struct statfs fs;
 
   if(statfs(path, &fs)) {
     return 1;
   }
   return fs_type_has_unix_modes(fs.f_fstypename);
+#endif
 }
 
 static int
 fd_has_unix_modes(int fd) {
+#ifdef __linux__
+  (void)fd;
+  return 1;
+#else
   struct statfs fs;
 
   if(fstatfs(fd, &fs)) {
     return 1;
   }
   return fs_type_has_unix_modes(fs.f_fstypename);
+#endif
 }
 
 static int

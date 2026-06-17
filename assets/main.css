@@ -1,5 +1,4 @@
 :root {
-  color-scheme: dark;
   font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   background: #111316;
   color: #edf0f2;
@@ -15,21 +14,25 @@
 
 .init-loading {
   position: fixed;
-  inset: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
   z-index: 20000;
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: #111316;
 }
 
 .loading-dots {
   display: flex;
-  gap: 12px;
 }
 
 .loading-dots span {
   width: 14px;
   height: 14px;
+  margin: 0 6px;
   border-radius: 50%;
   background: #8fa1b3;
   animation: loading-pulse 1s ease-in-out infinite;
@@ -68,14 +71,13 @@ body {
 .shell {
   min-height: 100vh;
   height: 100vh;
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  display: flex;
+  flex-direction: column;
 }
 
 .topbar {
   display: flex;
   align-items: center;
-  gap: 20px;
   padding: 12px 30px;
   background: #1b2026;
   border-bottom: 1px solid #2d343d;
@@ -96,7 +98,6 @@ body {
 .space-info {
   display: flex;
   justify-content: flex-end;
-  gap: 14px;
   flex: 0 1 auto;
   max-width: 58vw;
   color: #c9d3dc;
@@ -107,6 +108,7 @@ body {
 }
 
 .space-item {
+  margin-left: 14px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -128,6 +130,7 @@ body {
   height: 24px;
   padding: 0;
   flex: 0 0 24px;
+  margin-left: 16px;
 }
 
 .power-button {
@@ -162,7 +165,6 @@ body {
 .tool-right {
   display: flex;
   align-items: center;
-  gap: 12px;
   flex-wrap: wrap;
 }
 
@@ -176,6 +178,16 @@ body {
 .tool-left {
   min-width: 0;
   flex: 1 1 auto;
+}
+
+.tool-left > *,
+.tool-right > * {
+  margin: 0 12px 0 0;
+}
+
+.tool-right > * {
+  margin-right: 0;
+  margin-left: 12px;
 }
 
 .tool-right {
@@ -226,19 +238,23 @@ button:disabled,
 }
 
 .paste-action {
-  max-width: min(480px, 100%);
-  gap: 8px;
+  max-width: 480px;
+}
+
+.paste-action > * {
+  margin-right: 8px;
 }
 
 .paste-name {
   display: inline-block;
-  max-width: min(180px, 18vw);
+  max-width: 180px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .content {
+  flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
 }
@@ -336,6 +352,7 @@ tr.selected {
 input[type="checkbox"] {
   width: 34px;
   height: 34px;
+  cursor: pointer;
 }
 
 .icon {
@@ -362,11 +379,14 @@ input[type="checkbox"] {
   background: transparent;
   color: #edf0f2;
   justify-content: flex-start;
-  gap: 14px;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   cursor: pointer;
+}
+
+.row-action .icon {
+  margin-right: 14px;
 }
 
 .name-text {
@@ -375,7 +395,11 @@ input[type="checkbox"] {
   text-overflow: ellipsis;
 }
 
-.empty,
+.empty {
+  color: #aab4be;
+  padding: 20px 90px;
+}
+
 .status {
   color: #aab4be;
   padding: 10px 25px;
@@ -388,7 +412,6 @@ input[type="checkbox"] {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
 }
 
 .version-text {
@@ -398,10 +421,14 @@ input[type="checkbox"] {
 
 .task-overlay {
   position: fixed;
-  inset: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
   z-index: 10000;
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   padding: 48px;
   background: rgba(4, 6, 8, .82);
 }
@@ -411,7 +438,8 @@ input[type="checkbox"] {
 }
 
 .task-panel {
-  width: min(980px, calc(100vw - 96px));
+  width: 980px;
+  max-width: calc(100vw - 96px);
   border: 1px solid #46515f;
   border-radius: 10px;
   background: #15191e;
@@ -420,19 +448,24 @@ input[type="checkbox"] {
 }
 
 .tasks {
-  display: grid;
-  gap: 18px;
+  display: block;
 }
 
 .task {
-  display: grid;
-  gap: 14px;
+  display: block;
+}
+
+.task > * + * {
+  margin-top: 14px;
+}
+
+.task .danger {
+  width: 100%;
 }
 
 .task-head {
   display: flex;
-  align-items: start;
-  gap: 16px;
+  align-items: flex-start;
   font-size: 24px;
 }
 
@@ -441,7 +474,7 @@ input[type="checkbox"] {
 }
 
 .task-amount {
-  min-width: max-content;
+  min-width: 160px;
   white-space: nowrap;
   text-align: right;
 }
@@ -456,8 +489,11 @@ input[type="checkbox"] {
 
 .task-name {
   display: flex;
-  gap: 8px;
   min-width: 0;
+}
+
+.task-name > * {
+  margin-right: 8px;
 }
 
 .task-name-op,
@@ -467,25 +503,29 @@ input[type="checkbox"] {
 
 .task-name-subject {
   min-width: 0;
-  max-width: min(56vw, 560px);
+  max-width: 560px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .task-meta {
-  display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
-  gap: 18px;
+  display: flex;
   color: #c9d3dc;
   font-size: 20px;
 }
 
 .task-meta div {
+  flex: 1 1 0;
   min-width: 0;
+  margin-right: 18px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.task-meta div:last-child {
+  margin-right: 0;
 }
 
 .task-meta div:nth-child(2) {
@@ -517,9 +557,13 @@ input[type="checkbox"] {
 
 .progress-text {
   position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   color: #edf0f2;
   font-size: 18px;
   font-weight: 700;

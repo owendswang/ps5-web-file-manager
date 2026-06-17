@@ -1,4 +1,5 @@
 gen/
-web-file-mgr.elf
+*.elf
+web-file-mgr-linux
 *.o
 *.d

@@ -28,12 +28,12 @@ port_available(unsigned short port) {
 
   if((fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
     perror("socket");
-    return 0;
+    return -1;
   }
   if(setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int)) < 0) {
     perror("setsockopt");
     close(fd);
-    return 0;
+    return -1;
   }
   memset(&addr, 0, sizeof(addr));
   addr.sin_family = AF_INET;
@@ -50,7 +50,11 @@ find_available_port(unsigned short start) {
   unsigned int port;
 
   for(port = start; port <= 65535; port++) {
-    if(port_available((unsigned short)port)) {
+    int available = port_available((unsigned short)port);
+    if(available < 0) {
+      return 0;
+    }
+    if(available) {
       return (unsigned short)port;
     }
   }
@@ -99,7 +103,10 @@ find_pid(const char *name) {
 int
 main(int argc, char **argv) {
   unsigned short port;
+#ifdef __SCE__
+  unsigned short notified_port = 0;
   pid_t pid;
+#endif
 
   (void)argc;
   (void)argv;
@@ -114,26 +121,37 @@ main(int argc, char **argv) {
     sleep(1);
   }
 #else
-  (void)pid;
 #endif
-
-  port = find_available_port(DEFAULT_PORT);
-  if(!port) {
-    fprintf(stderr, "no available port from %u\n", DEFAULT_PORT);
-    return 1;
-  }
 
   puts(PROCESS_NAME);
   printf("version: %s\n", VERSION_TAG);
-  printf("listening on port %u\n", port);
 
 #ifdef __SCE__
   app_install_if_needed();
-  notify_user("Web File Manager\nVersion: %s\nPort: %u", VERSION_TAG, port);
 #endif
 
   signal(SIGPIPE, SIG_IGN);
   signal(SIGCHLD, SIG_IGN);
 
-  return websrv_listen(port) ? 1 : 0;
+  while(1) {
+    port = find_available_port(DEFAULT_PORT);
+    if(!port) {
+      fprintf(stderr, "no available port from %u\n", DEFAULT_PORT);
+      sleep(3);
+      continue;
+    }
+
+    printf("listening on port %u\n", port);
+#ifdef __SCE__
+    if(notified_port != port) {
+      notify_user("Web File Manager\nVersion: %s\nPort: %u", VERSION_TAG, port);
+      notified_port = port;
+    }
+#endif
+
+    websrv_listen(port);
+    sleep(3);
+  }
+
+  return 0;
 }

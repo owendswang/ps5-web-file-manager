@@ -5,7 +5,7 @@ safely copying game dump folders from USB storage to internal storage.
 
 ## Brief
 
-PS5 web file manager payload. It runs an HTTP UI starting at port `8888`, installs a home screen launcher on startup when needed, and provides file operations from the PS5 browser. If `8888` is already in use, the payload tries the next port until one is available; the startup notification shows the actual listen port.
+PS5 web file manager payload. It runs an HTTP UI starting at port `8888`, installs a home screen launcher in Media catagory on startup when needed, and provides file operations from the PS5 browser. If `8888` is already in use, the payload tries the next port until one is available; the startup notification shows the actual listen port.
 
 ## Features
 
@@ -69,7 +69,7 @@ After the payload starts, the PS5 notification shows the app name, version, and 
 http://${PS5_IP_ADDRESS}:8888/
 ```
 
-On first startup the payload installs a `PS5 Web File Manager` web shortcut on the PS5 home screen when needed. If the payload had to use a fallback port such as `8889`, use the port shown in the startup notification.
+On first startup the payload installs a `PS5 Web File Manager` web shortcut in the Media category when needed. If the payload had to use a fallback port such as `8889`, use the port shown in the startup notification.
 
 ## Notes
 
