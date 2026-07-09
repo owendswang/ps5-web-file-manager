@@ -4,8 +4,6 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/stat.h>
 
 #include <ps5/kernel.h>
@@ -33,9 +31,16 @@ int sceAppInstUtilAppInstallAll(void *);
 
 static int
 install_file(const char *path, const uint8_t *data, size_t size) {
+  struct stat st;
   FILE *f;
 
-  if(!(f = fopen(path, "w"))) {
+  if(!stat(path, &st)) {
+    return 0;
+  }
+  if(errno != ENOENT) {
+    return -1;
+  }
+  if(!(f = fopen(path, "wb"))) {
     return -1;
   }
   if(fwrite(data, size, 1, f) != 1) {
@@ -65,32 +70,13 @@ install_app(const char *title_id, const char *dir) {
 }
 
 static int
-needs_update(const char *path, const uint8_t *expected, size_t expected_size) {
+needs_install_file(const char *path) {
   struct stat st;
-  uint8_t *buf;
-  FILE *f;
-  int mismatch;
 
-  if(stat(path, &st) || st.st_size != (off_t)expected_size) {
+  if(stat(path, &st)) {
     return 1;
   }
-  if(!(f = fopen(path, "r"))) {
-    return 1;
-  }
-  if(!(buf = malloc(expected_size))) {
-    fclose(f);
-    return 1;
-  }
-  if(fread(buf, 1, expected_size, f) != expected_size) {
-    free(buf);
-    fclose(f);
-    return 1;
-  }
-  fclose(f);
-
-  mismatch = memcmp(buf, expected, expected_size);
-  free(buf);
-  return mismatch != 0;
+  return 0;
 }
 
 int
@@ -111,8 +97,7 @@ app_install_if_needed(void) {
 
   if(stat(base_dir, &st)) {
     update_needed = 1;
-  } else if(needs_update(param_path, param_json, param_json_size) ||
-            needs_update(icon_path, icon0_png, icon0_png_size)) {
+  } else if(needs_install_file(param_path) || needs_install_file(icon_path)) {
     update_needed = 1;
   }
 
