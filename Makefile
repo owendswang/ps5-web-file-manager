@@ -13,7 +13,7 @@ ifeq ($(MAKECMDGOALS),)
   endif
 endif
 
-VERSION_TAG := v0.7
+VERSION_TAG := v0.8
 TITLE_ID    := FMGR88888
 PYTHON      ?= python3
 STRIP       ?= $(PS5_PAYLOAD_SDK)/bin/prospero-strip

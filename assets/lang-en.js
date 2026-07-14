@@ -91,6 +91,8 @@ window.WFM_LANG = {
   storageUsb: "USB",
   storageM2: "M.2",
   storageExtended: "Extended",
+  storageRoot: "Root",
+  storageCurrent: "Current",
   err_target_dir_not_writable: "Target folder is not writable: {path}",
   err_target_file_not_writable: "Target file is not writable: {path}",
   err_target_parent_not_writable: "Current folder is not writable: {path}",

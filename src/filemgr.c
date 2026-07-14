@@ -102,6 +102,7 @@ typedef struct task_completion {
   time_t elapsed;
 } task_completion_t;
 
+static char *fs_path_value(char *path);
 #if FILEMGR_PIPELINE_COPY
 typedef struct copy_pipeline_slot {
   char *data;
@@ -271,7 +272,7 @@ parse_paths(const char *raw, char ***out_paths, size_t *out_count) {
       return -1;
     }
     paths = tmp;
-    if(!(paths[count] = strdup(line))) {
+    if(!(paths[count] = fs_path_value(strdup(line)))) {
       free_paths(paths, count);
       free(copy);
       errno = ENOMEM;
@@ -577,26 +578,121 @@ task_finish_bytes(file_task_t *task, const char *current) {
 }
 
 static int
+utf8_decode_char(const char **ps, unsigned int *out) {
+  const unsigned char *s = (const unsigned char *)*ps;
+  unsigned char c = s[0];
+  unsigned int cp;
+  size_t n;
+  size_t i;
+
+  if(c < 0x80) {
+    *out = c;
+    *ps += 1;
+    return 0;
+  }
+  if((c & 0xe0) == 0xc0) {
+    cp = c & 0x1f;
+    n = 2;
+  } else if((c & 0xf0) == 0xe0) {
+    cp = c & 0x0f;
+    n = 3;
+  } else if((c & 0xf8) == 0xf0) {
+    cp = c & 0x07;
+    n = 4;
+  } else {
+    return -1;
+  }
+
+  for(i = 1; i < n; i++) {
+    unsigned char t = s[i];
+    if(!t || (t & 0xc0) != 0x80) {
+      return -1;
+    }
+    cp = (cp << 6) | (t & 0x3f);
+  }
+  if((n == 2 && cp < 0x80) ||
+     (n == 3 && cp < 0x800) ||
+     (n == 4 && (cp < 0x10000 || cp > 0x10ffff)) ||
+     (cp >= 0xd800 && cp <= 0xdfff)) {
+    return -1;
+  }
+
+  *out = cp;
+  *ps += n;
+  return 0;
+}
+
+static char *
+fs_path_value(char *path) {
+  const char *p;
+  char *out;
+  size_t len;
+  size_t pos = 0;
+  int has_byte_token = 0;
+
+  if(!path) {
+    return path;
+  }
+  for(p = path; *p;) {
+    unsigned int cp;
+    const char *next = p;
+
+    if(utf8_decode_char(&next, &cp)) {
+      return path;
+    }
+    if(cp >= 0x80 && cp <= 0xff) {
+      has_byte_token = 1;
+    } else if(cp > 0xff) {
+      return path;
+    }
+    p = next;
+  }
+  if(!has_byte_token) {
+    return path;
+  }
+
+  len = strlen(path);
+  if(!(out = malloc(len + 1))) {
+    return path;
+  }
+  for(p = path; *p;) {
+    unsigned int cp;
+    const char *next = p;
+
+    if(utf8_decode_char(&next, &cp)) {
+      free(out);
+      return path;
+    }
+    out[pos++] = (char)(unsigned char)cp;
+    p = next;
+  }
+  out[pos] = 0;
+  free(path);
+  return out;
+}
+
+static int
 json_escape(strbuf_t *b, const char *s) {
   if(strbuf_append(b, "\"")) return -1;
-  for(; *s; s++) {
+  while(*s) {
     unsigned char c = (unsigned char)*s;
     switch(c) {
-    case '"': if(strbuf_append(b, "\\\"")) return -1; break;
-    case '\\': if(strbuf_append(b, "\\\\")) return -1; break;
-    case '\b': if(strbuf_append(b, "\\b")) return -1; break;
-    case '\f': if(strbuf_append(b, "\\f")) return -1; break;
-    case '\n': if(strbuf_append(b, "\\n")) return -1; break;
-    case '\r': if(strbuf_append(b, "\\r")) return -1; break;
-    case '\t': if(strbuf_append(b, "\\t")) return -1; break;
+    case '"': if(strbuf_append(b, "\\\"")) return -1; s++; break;
+    case '\\': if(strbuf_append(b, "\\\\")) return -1; s++; break;
+    case '\b': if(strbuf_append(b, "\\b")) return -1; s++; break;
+    case '\f': if(strbuf_append(b, "\\f")) return -1; s++; break;
+    case '\n': if(strbuf_append(b, "\\n")) return -1; s++; break;
+    case '\r': if(strbuf_append(b, "\\r")) return -1; s++; break;
+    case '\t': if(strbuf_append(b, "\\t")) return -1; s++; break;
     default:
-      if(c < 0x20) {
+      if(c < 0x20 || c >= 0x80) {
         if(strbuf_printf(b, "\\u%04x", c)) return -1;
       } else {
         if(strbuf_reserve(b, 1)) return -1;
         b->data[b->len++] = (char)c;
         b->data[b->len] = 0;
       }
+      s++;
       break;
     }
   }
@@ -2443,6 +2539,7 @@ vfs_bytes(fsblkcnt_t blocks, unsigned long block_size) {
   return (unsigned long long)blocks * (unsigned long long)block_size;
 }
 
+#ifdef __SCE__
 static int
 path_is_mounted(const char *path, const struct stat *st) {
   char parent[PATH_MAX];
@@ -2456,6 +2553,7 @@ path_is_mounted(const char *path, const struct stat *st) {
   }
   return st->st_dev != parent_st.st_dev;
 }
+#endif
 
 static int
 task_target_path(file_task_t *task, const char *src, char *out, size_t size) {
@@ -2737,7 +2835,7 @@ create_task_response(struct MHD_Connection *conn, task_op_t op,
 
 static enum MHD_Result
 api_list(struct MHD_Connection *conn) {
-  char *path = query_value(conn, "path");
+  char *path = fs_path_value(query_value(conn, "path"));
   DIR *dir;
   struct dirent *entry;
   struct stat st;
@@ -2852,6 +2950,7 @@ api_tasks(struct MHD_Connection *conn) {
 
 static enum MHD_Result
 api_space(struct MHD_Connection *conn) {
+#ifdef __SCE__
   static const struct {
     const char *label_key;
     const char *path;
@@ -2868,11 +2967,13 @@ api_space(struct MHD_Connection *conn) {
     {"storageM2", "/mnt/ex1"},
     {"storageExtended", "/mnt/ext0"},
   };
-  char *current = query_value(conn, "path");
+#endif
+  char *current = fs_path_value(query_value(conn, "path"));
   strbuf_t b = {0};
   int first = 1;
 
   strbuf_append(&b, "{\"ok\":true,\"spaces\":[");
+#ifdef __SCE__
   for(size_t i = 0; i < sizeof(mounts) / sizeof(mounts[0]); i++) {
     struct statvfs vfs;
     struct stat st;
@@ -2909,6 +3010,33 @@ api_space(struct MHD_Connection *conn) {
     strbuf_printf(&b, ",\"free\":%llu,\"total\":%llu,\"current\":%s}",
                   free_bytes, total_bytes, is_current ? "true" : "false");
   }
+#else
+  const char *paths[] = {"/", current && strcmp(current, "/") ? current : NULL};
+  const char *labels[] = {"storageRoot", "storageCurrent"};
+  for(size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+    struct statvfs vfs;
+    unsigned long block_size;
+    unsigned long long free_bytes;
+    unsigned long long total_bytes;
+
+    if(!paths[i] || statvfs(paths[i], &vfs)) {
+      continue;
+    }
+    block_size = vfs.f_frsize ? vfs.f_frsize : vfs.f_bsize;
+    free_bytes = vfs_bytes(vfs.f_bavail, block_size);
+    total_bytes = vfs_bytes(vfs.f_blocks, block_size);
+    if(!first) {
+      strbuf_append(&b, ",");
+    }
+    first = 0;
+    strbuf_append(&b, "{\"label_key\":");
+    json_escape(&b, labels[i]);
+    strbuf_append(&b, ",\"path\":");
+    json_escape(&b, paths[i]);
+    strbuf_printf(&b, ",\"free\":%llu,\"total\":%llu,\"current\":%s}",
+                  free_bytes, total_bytes, i ? "true" : "false");
+  }
+#endif
   free(current);
   strbuf_append(&b, "]}");
   return send_buffer(conn, MHD_HTTP_OK, b.data, "application/json");
@@ -2958,7 +3086,7 @@ api_exit(struct MHD_Connection *conn) {
 static enum MHD_Result
 api_copy(struct MHD_Connection *conn) {
   char *paths_raw = query_value(conn, "paths");
-  char *dst = query_value(conn, "dst");
+  char *dst = fs_path_value(query_value(conn, "dst"));
   char *overwrite = query_value(conn, "overwrite");
   char **paths = NULL;
   size_t count = 0;
@@ -2985,7 +3113,7 @@ api_copy(struct MHD_Connection *conn) {
 static enum MHD_Result
 api_move(struct MHD_Connection *conn) {
   char *paths_raw = query_value(conn, "paths");
-  char *dst = query_value(conn, "dst");
+  char *dst = fs_path_value(query_value(conn, "dst"));
   char *overwrite = query_value(conn, "overwrite");
   char **paths = NULL;
   size_t count = 0;
@@ -3025,8 +3153,8 @@ api_delete(struct MHD_Connection *conn) {
 
 static enum MHD_Result
 api_rename(struct MHD_Connection *conn) {
-  char *path = query_value(conn, "path");
-  char *name = query_value(conn, "name");
+  char *path = fs_path_value(query_value(conn, "path"));
+  char *name = fs_path_value(query_value(conn, "name"));
   char parent[PATH_MAX];
   char target[PATH_MAX];
   int ret;
@@ -3053,8 +3181,8 @@ api_rename(struct MHD_Connection *conn) {
 
 static enum MHD_Result
 api_mkdir(struct MHD_Connection *conn) {
-  char *path = query_value(conn, "path");
-  char *name = query_value(conn, "name");
+  char *path = fs_path_value(query_value(conn, "path"));
+  char *name = fs_path_value(query_value(conn, "name"));
   char target[PATH_MAX];
   int ret;
 
@@ -3081,7 +3209,7 @@ api_mkdir(struct MHD_Connection *conn) {
 
 static enum MHD_Result
 api_text(struct MHD_Connection *conn) {
-  char *path = query_value(conn, "path");
+  char *path = fs_path_value(query_value(conn, "path"));
   char *data;
   size_t size;
   struct stat st;
@@ -3118,8 +3246,8 @@ api_text(struct MHD_Connection *conn) {
 
 static enum MHD_Result
 api_text_create(struct MHD_Connection *conn) {
-  char *path = query_value(conn, "path");
-  char *name = query_value(conn, "name");
+  char *path = fs_path_value(query_value(conn, "path"));
+  char *name = fs_path_value(query_value(conn, "name"));
   char target[PATH_MAX];
   int fd = -1;
   int ret = -1;
@@ -3213,7 +3341,7 @@ done:
 static enum MHD_Result
 api_text_save(struct MHD_Connection *conn, const char *body,
               size_t body_size) {
-  char *path = query_value(conn, "path");
+  char *path = fs_path_value(query_value(conn, "path"));
   char *expected = query_value(conn, "version");
   char *current = NULL;
   size_t current_size = 0;

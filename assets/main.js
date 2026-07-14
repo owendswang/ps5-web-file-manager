@@ -22,7 +22,7 @@ let textEditorOriginal = "";
 let textEditorBusy = false;
 let L = {};
 
-const APP_VERSION = "v0.7";
+const APP_VERSION = "v0.8";
 const LAST_PATH_KEY = "ps5-web-file-mgr:last-path";
 const LOADING_DISPLAY_DELAY = 250;
 
@@ -127,6 +127,81 @@ async function api(path, params, options) {
   const data = await (await request(path, params, options)).json();
   if (!data.ok) throw new Error(backendErrorText(data.error_code, data.error_arg, data.error));
   return data;
+}
+
+function decodeFsText(text) {
+  text = String(text || "");
+  let needsDecode = false;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code > 0xff) return text;
+    if (code >= 0x80) needsDecode = true;
+  }
+  if (!needsDecode || typeof TextDecoder === "undefined" || typeof Uint8Array === "undefined") return text;
+
+  const bytes = new Uint8Array(text.length);
+  for (let i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i) & 0xff;
+  if (isUtf8Bytes(bytes)) {
+    try {
+      return new TextDecoder("utf-8").decode(bytes);
+    } catch (err) {
+      return text;
+    }
+  }
+  try {
+    return new TextDecoder("gbk").decode(bytes);
+  } catch (err) {
+    try {
+      return new TextDecoder("gb18030").decode(bytes);
+    } catch (err2) {
+      return text;
+    }
+  }
+}
+
+function isUtf8Bytes(bytes) {
+  for (let i = 0; i < bytes.length;) {
+    const c = bytes[i];
+    let n = 0;
+    let cp = 0;
+
+    if (c < 0x80) {
+      i++;
+      continue;
+    }
+    if ((c & 0xe0) === 0xc0) {
+      n = 2;
+      cp = c & 0x1f;
+    } else if ((c & 0xf0) === 0xe0) {
+      n = 3;
+      cp = c & 0x0f;
+    } else if ((c & 0xf8) === 0xf0) {
+      n = 4;
+      cp = c & 0x07;
+    } else {
+      return false;
+    }
+    if (i + n > bytes.length) return false;
+    for (let j = 1; j < n; j++) {
+      const t = bytes[i + j];
+      if ((t & 0xc0) !== 0x80) return false;
+      cp = (cp << 6) | (t & 0x3f);
+    }
+    if ((n === 2 && cp < 0x80) ||
+        (n === 3 && cp < 0x800) ||
+        (n === 4 && (cp < 0x10000 || cp > 0x10ffff)) ||
+        (cp >= 0xd800 && cp <= 0xdfff)) return false;
+    i += n;
+  }
+  return true;
+}
+
+function displayName(item) {
+  return item.displayName || decodeFsText(item.name);
+}
+
+function displayPath(path) {
+  return decodeFsText(path);
 }
 
 async function fetchText(path, params) {
@@ -356,8 +431,8 @@ function isPreviewableImage(item) {
 
 function openImagePreview(item) {
   if (busy) return;
-  imagePreviewNameEl.textContent = item.name;
-  imagePreviewNameEl.title = item.name;
+  imagePreviewNameEl.textContent = displayName(item);
+  imagePreviewNameEl.title = displayName(item);
   imagePreviewEl.src = "/fs?path=" + encodeURIComponent(item.path);
   imagePreviewOverlayEl.hidden = false;
   imagePreviewCloseBtn.focus();
@@ -399,8 +474,8 @@ function requestCloseTextEditor() {
 function showTextEditor(item, text, version) {
   textEditorPath = item.path;
   textEditorVersion = version;
-  textEditorPathEl.textContent = item.path;
-  textEditorPathEl.title = item.path;
+  textEditorPathEl.textContent = displayPath(item.path);
+  textEditorPathEl.title = displayPath(item.path);
   textEditorEl.value = text;
   textEditorOriginal = textEditorEl.value;
   textEditorOverlayEl.hidden = false;
@@ -413,8 +488,8 @@ async function openTextEditor(item) {
   textEditorPath = item.path;
   textEditorVersion = null;
   textEditorOriginal = "";
-  textEditorPathEl.textContent = item.path;
-  textEditorPathEl.title = item.path;
+  textEditorPathEl.textContent = displayPath(item.path);
+  textEditorPathEl.title = displayPath(item.path);
   textEditorEl.value = "";
   textEditorOverlayEl.hidden = false;
   setTextEditorBusy(true, t("loadingText"));
@@ -498,13 +573,13 @@ function clipboardTitle() {
 
 function itemTitle(items) {
   if (!items.length) return "";
-  return items.length === 1 ? items[0].name : t("selectedItems", { name: items[0].name, count: items.length });
+  return items.length === 1 ? displayName(items[0]) : t("selectedItems", { name: displayName(items[0]), count: items.length });
 }
 
 function pathName(path) {
   const clean = String(path || "").replace(/\/+$/, "");
   const pos = clean.lastIndexOf("/");
-  return pos >= 0 ? clean.slice(pos + 1) || "/" : clean;
+  return displayPath(pos >= 0 ? clean.slice(pos + 1) || "/" : clean);
 }
 
 function taskSubject(task) {
@@ -675,8 +750,8 @@ function render() {
     nameBtn.type = "button";
     const nameText = document.createElement("span");
     nameText.className = "name-text";
-    nameText.textContent = item.name;
-    nameBtn.title = item.path;
+    nameText.textContent = displayName(item);
+    nameBtn.title = displayPath(item.path);
     const iconImg = document.createElement("img");
     iconImg.className = "icon";
     iconImg.src = isParent ? "/icon-up.png" : item.type === "d" ? "/icon-folder.png" :
@@ -736,13 +811,13 @@ async function load(path, scrollTop, force) {
     setStatus(t("readDir"));
     const data = await api("/api/list", { path });
     cwd = data.path;
-    pathEl.textContent = cwd;
+    pathEl.textContent = displayPath(cwd);
     savePath(cwd);
     refreshSpaces();
     entries = data.entries.sort((a, b) => {
       if (a.type === "d" && b.type !== "d") return -1;
       if (a.type !== "d" && b.type === "d") return 1;
-      return a.name.localeCompare(b.name);
+      return displayName(a).localeCompare(displayName(b));
     });
     selected.clear();
     focusedPath = null;
@@ -853,7 +928,7 @@ function validatePasteTarget() {
 
 function conflictText(names) {
   if (!names.length) return "";
-  const shown = names.slice(0, 4).join(", ");
+  const shown = names.slice(0, 4).map(decodeFsText).join(", ");
   return names.length > 4 ? t("selectedItems", { name: shown, count: names.length }) : shown;
 }
 
@@ -906,6 +981,7 @@ function showPendingOverlay(text) {
 }
 
 function renderTaskPath(element, path) {
+  path = displayPath(path);
   element.title = path;
   element.textContent = path;
   if (element.scrollWidth <= element.clientWidth) return;
@@ -1025,7 +1101,7 @@ function renderTasks(tasks) {
     current.className += " task-current-plain";
     current.textContent = task.error;
   }
-  else current.textContent = task.current || task.src;
+  else current.textContent = displayPath(task.current || task.src);
 
   const meta = document.createElement("div");
   meta.className = "task-meta";
@@ -1129,8 +1205,8 @@ function actionRename() {
   if (busy || loadingPath) return;
   const item = singleSelected();
   if (!item) return;
-  const name = (prompt(t("renamePrompt"), item.name) || "").trim();
-  if (!name || name === item.name) return;
+  const name = (prompt(t("renamePrompt"), displayName(item)) || "").trim();
+  if (!name || name === displayName(item)) return;
   runImmediateAction(t("rename"), () => api("/api/rename", { path: item.path, name }));
 }
 
@@ -1198,7 +1274,12 @@ filesEl.addEventListener("click", event => {
   let target = event.target;
   while (target && target !== row && !target.classList.contains("row-action")) target = target.parentNode;
   if (target === row && row.dataset.type !== "parent") return;
-  const item = { path: row.dataset.path, name: row.dataset.name, type: row.dataset.type };
+  const item = {
+    path: row.dataset.path,
+    name: row.dataset.name,
+    type: row.dataset.type,
+    displayName: decodeFsText(row.dataset.name)
+  };
   focusPath(item.path);
   if (item.type === "parent" || item.type === "d") load(item.path);
   else if (isPreviewableImage(item)) openImagePreview(item);
@@ -1228,7 +1309,7 @@ async function init() {
   applyStaticText();
   const savedPath = readSavedPath();
   cwd = savedPath;
-  pathEl.textContent = cwd;
+  pathEl.textContent = displayPath(cwd);
   taskRefreshPath = savedPath;
   refreshSpaces();
   await pollTasks();

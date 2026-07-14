@@ -91,6 +91,8 @@ window.WFM_LANG = {
   storageUsb: "USB存储",
   storageM2: "M2扩充存储",
   storageExtended: "扩展存储",
+  storageRoot: "根分区",
+  storageCurrent: "当前目录",
   err_target_dir_not_writable: "目标目录不可写: {path}",
   err_target_file_not_writable: "目标文件不可写: {path}",
   err_target_parent_not_writable: "当前目录不可写: {path}",
