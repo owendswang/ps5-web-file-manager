@@ -275,14 +275,21 @@ button.primary:hover {
 }
 
 .paste-action > * {
+  flex: 0 0 auto;
   margin-right: 8px;
 }
 
 .paste-name {
   display: inline-block;
+  flex: 1 1 auto;
+  min-width: 0;
   max-width: 180px;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.paste-count {
   white-space: nowrap;
 }
 

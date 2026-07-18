@@ -227,6 +227,71 @@ query_value(struct MHD_Connection *conn, const char *key) {
   return value;
 }
 
+static int
+hex_value(char c) {
+  if(c >= '0' && c <= '9') return c - '0';
+  if(c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if(c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+static char *
+form_decode(const char *src, size_t len) {
+  char *out = malloc(len + 1);
+  size_t i;
+  size_t j = 0;
+
+  if(!out) {
+    return NULL;
+  }
+  for(i = 0; i < len; i++) {
+    if(src[i] == '+') {
+      out[j++] = ' ';
+    } else if(src[i] == '%' && i + 2 < len) {
+      int hi = hex_value(src[i + 1]);
+      int lo = hex_value(src[i + 2]);
+      if(hi >= 0 && lo >= 0) {
+        out[j++] = (char)((hi << 4) | lo);
+        i += 2;
+      } else {
+        out[j++] = src[i];
+      }
+    } else {
+      out[j++] = src[i];
+    }
+  }
+  out[j] = 0;
+  return out;
+}
+
+static char *
+body_form_value(const char *body, size_t body_size, const char *key) {
+  size_t key_len = strlen(key);
+  size_t pos = 0;
+
+  while(body && pos < body_size) {
+    size_t start = pos;
+    size_t end;
+    size_t eq;
+
+    while(pos < body_size && body[pos] != '&') {
+      pos++;
+    }
+    end = pos;
+    if(pos < body_size && body[pos] == '&') {
+      pos++;
+    }
+    eq = start;
+    while(eq < end && body[eq] != '=') {
+      eq++;
+    }
+    if(eq - start == key_len && !strncmp(body + start, key, key_len)) {
+      return form_decode(body + eq + (eq < end), end - eq - (eq < end));
+    }
+  }
+  return NULL;
+}
+
 static void
 free_paths(char **paths, size_t count) {
   size_t i;
@@ -2465,14 +2530,60 @@ probe_file_writable(const char *path) {
 }
 
 static int
-check_target_writable(const char *target, char *error, size_t error_size,
+path_seen(char **paths, size_t count, const char *path) {
+  size_t i;
+
+  for(i = 0; i < count; i++) {
+    if(!strcmp(paths[i], path)) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+static int
+remember_path(char ***paths, size_t *count, const char *path) {
+  char **tmp;
+
+  if(path_seen(*paths, *count, path)) {
+    return 0;
+  }
+  tmp = realloc(*paths, sizeof(char *) * (*count + 1));
+  if(!tmp) {
+    errno = ENOMEM;
+    return -1;
+  }
+  *paths = tmp;
+  (*paths)[*count] = strdup(path);
+  if(!(*paths)[*count]) {
+    errno = ENOMEM;
+    return -1;
+  }
+  (*count)++;
+  return 0;
+}
+
+static int
+probe_dir_once(const char *path, char ***checked, size_t *checked_count) {
+  if(path_seen(*checked, *checked_count, path)) {
+    return 0;
+  }
+  if(probe_dir_writable(path)) {
+    return -1;
+  }
+  return remember_path(checked, checked_count, path);
+}
+
+static int
+check_target_writable(const char *target, char ***checked_dirs,
+                      size_t *checked_dir_count, char *error, size_t error_size,
                       char *code, size_t code_size, char *arg, size_t arg_size) {
   struct stat st;
   char parent[PATH_MAX];
 
   if(!stat(target, &st)) {
     if(S_ISDIR(st.st_mode)) {
-      if(probe_dir_writable(target)) {
+      if(probe_dir_once(target, checked_dirs, checked_dir_count)) {
         set_permission_error_detail(error, error_size, code, code_size,
                                     arg, arg_size, "target_dir_not_writable",
                                     "target directory is not writable", target);
@@ -2502,7 +2613,7 @@ check_parent:
                      "target_check_failed", "cannot check target path", target);
     return -1;
   }
-  if(probe_dir_writable(parent)) {
+  if(probe_dir_once(parent, checked_dirs, checked_dir_count)) {
     set_permission_error_detail(error, error_size, code, code_size,
                                 arg, arg_size, "target_parent_not_writable",
                                 "current directory is not writable", parent);
@@ -2514,23 +2625,30 @@ check_parent:
 static int
 check_task_targets_writable(file_task_t *task, char *error, size_t error_size,
                             char *code, size_t code_size, char *arg, size_t arg_size) {
+  char **checked_dirs = NULL;
+  size_t checked_dir_count = 0;
   size_t i;
 
   for(i = 0; i < task->src_count; i++) {
     char target[PATH_MAX];
 
     if(task_cancel_requested(task)) {
+      free_paths(checked_dirs, checked_dir_count);
       return -1;
     }
     if(task_target_path(task, task->srcs[i], target, sizeof(target))) {
       snprintf(error, error_size, "target path is too long");
       snprintf(code, code_size, "target_path_too_long");
+      free_paths(checked_dirs, checked_dir_count);
       return -1;
     }
-    if(check_target_writable(target, error, error_size, code, code_size, arg, arg_size)) {
+    if(check_target_writable(target, &checked_dirs, &checked_dir_count,
+                             error, error_size, code, code_size, arg, arg_size)) {
+      free_paths(checked_dirs, checked_dir_count);
       return -1;
     }
   }
+  free_paths(checked_dirs, checked_dir_count);
   return 0;
 }
 
@@ -3084,10 +3202,10 @@ api_exit(struct MHD_Connection *conn) {
 }
 
 static enum MHD_Result
-api_copy(struct MHD_Connection *conn) {
-  char *paths_raw = query_value(conn, "paths");
-  char *dst = fs_path_value(query_value(conn, "dst"));
-  char *overwrite = query_value(conn, "overwrite");
+api_copy(struct MHD_Connection *conn, const char *body, size_t body_size) {
+  char *paths_raw = body_form_value(body, body_size, "paths");
+  char *dst = fs_path_value(body_form_value(body, body_size, "dst"));
+  char *overwrite = body_form_value(body, body_size, "overwrite");
   char **paths = NULL;
   size_t count = 0;
   enum MHD_Result ret;
@@ -3111,10 +3229,10 @@ api_copy(struct MHD_Connection *conn) {
 }
 
 static enum MHD_Result
-api_move(struct MHD_Connection *conn) {
-  char *paths_raw = query_value(conn, "paths");
-  char *dst = fs_path_value(query_value(conn, "dst"));
-  char *overwrite = query_value(conn, "overwrite");
+api_move(struct MHD_Connection *conn, const char *body, size_t body_size) {
+  char *paths_raw = body_form_value(body, body_size, "paths");
+  char *dst = fs_path_value(body_form_value(body, body_size, "dst"));
+  char *overwrite = body_form_value(body, body_size, "overwrite");
   char **paths = NULL;
   size_t count = 0;
   enum MHD_Result ret;
@@ -3130,8 +3248,8 @@ api_move(struct MHD_Connection *conn) {
 }
 
 static enum MHD_Result
-api_delete(struct MHD_Connection *conn) {
-  char *paths_raw = query_value(conn, "paths");
+api_delete(struct MHD_Connection *conn, const char *body, size_t body_size) {
+  char *paths_raw = body_form_value(body, body_size, "paths");
   char **paths = NULL;
   size_t count = 0;
   enum MHD_Result ret;
@@ -3416,9 +3534,9 @@ filemgr_api_request(struct MHD_Connection *conn, const char *url,
   if(!strcmp(url, "/api/space")) return api_space(conn);
   if(!strcmp(url, "/api/cancel")) return api_cancel(conn);
   if(!strcmp(url, "/api/exit")) return api_exit(conn);
-  if(!strcmp(url, "/api/copy")) return api_copy(conn);
-  if(!strcmp(url, "/api/move")) return api_move(conn);
-  if(!strcmp(url, "/api/delete")) return api_delete(conn);
+  if(!strcmp(url, "/api/copy")) return api_copy(conn, body, body_size);
+  if(!strcmp(url, "/api/move")) return api_move(conn, body, body_size);
+  if(!strcmp(url, "/api/delete")) return api_delete(conn, body, body_size);
   if(!strcmp(url, "/api/rename")) return api_rename(conn);
   if(!strcmp(url, "/api/mkdir")) return api_mkdir(conn);
   if(!strcmp(url, "/api/text")) {

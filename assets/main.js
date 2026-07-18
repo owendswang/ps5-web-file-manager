@@ -6,6 +6,7 @@ let trackedTask = null;
 let busy = false;
 let clipboard = null;
 let pendingOverlayText = "";
+let pendingOverlayLabel = "";
 let pendingAbortController = null;
 let taskRefreshPath = "/";
 let hoverPaused = false;
@@ -13,6 +14,7 @@ let hoverResumeTimer = 0;
 let hoveredRow = null;
 let loadingPath = null;
 let directoryLoadingTimer = 0;
+let directoryLoadingStartedAt = 0;
 let taskOverlayTimer = 0;
 let lastCompletionId = null;
 let taskPollFailedAlertShown = false;
@@ -22,13 +24,15 @@ let textEditorOriginal = "";
 let textEditorBusy = false;
 let L = {};
 
-const APP_VERSION = "v0.8b";
+const APP_VERSION = "v0.9";
 const LAST_PATH_KEY = "ps5-web-file-mgr:last-path";
 const LOADING_DISPLAY_DELAY = 250;
+const SELECT_ALL_LOADING_THRESHOLD = 1000;
 
 const filesEl = document.getElementById("files");
 const contentEl = document.getElementById("content");
 const contentLoadingEl = document.getElementById("contentLoading");
+const contentLoadingTextEl = contentLoadingEl.querySelector(".content-loading-text");
 const emptyEl = document.getElementById("empty");
 const pathEl = document.getElementById("path");
 const spaceInfoEl = document.getElementById("spaceInfo");
@@ -40,6 +44,7 @@ const selectAllEl = document.getElementById("selectAll");
 const pasteBtn = document.getElementById("pasteBtn");
 const pasteVerbEl = document.getElementById("pasteVerb");
 const pasteNameEl = document.getElementById("pasteName");
+const pasteCountEl = document.getElementById("pasteCount");
 const pasteTargetTextEl = document.getElementById("pasteTargetText");
 const clearClipboardBtn = document.getElementById("clearClipboardBtn");
 const initLoadingEl = document.getElementById("initLoading");
@@ -112,6 +117,55 @@ function applyStaticText() {
   if (initLoadingEl) initLoadingEl.hidden = true;
 }
 
+function nextPaint() {
+  return new Promise(resolve => {
+    if (window.requestAnimationFrame) {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    }
+    else setTimeout(resolve, 0);
+  });
+}
+
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function showContentLoading(text) {
+  contentLoadingTextEl.textContent = text || t("readDir");
+  contentLoadingEl.style.top = contentEl.scrollTop + "px";
+  contentLoadingEl.hidden = false;
+  contentEl.classList.add("loading");
+  updateButtons();
+}
+
+function startContentLoadingTimer() {
+  if (!contentLoadingEl.hidden || directoryLoadingTimer) return;
+  directoryLoadingStartedAt = Date.now();
+  directoryLoadingTimer = setTimeout(() => {
+    directoryLoadingTimer = 0;
+    showContentLoading();
+  }, LOADING_DISPLAY_DELAY);
+}
+
+async function showContentLoadingAfterDelay() {
+  if (!contentLoadingEl.hidden) return;
+  const elapsed = directoryLoadingStartedAt ? Date.now() - directoryLoadingStartedAt : 0;
+  const remaining = LOADING_DISPLAY_DELAY - elapsed;
+  if (remaining > 0) await delay(remaining);
+  clearTimeout(directoryLoadingTimer);
+  directoryLoadingTimer = 0;
+  showContentLoading();
+}
+
+function hideContentLoading() {
+  clearTimeout(directoryLoadingTimer);
+  directoryLoadingTimer = 0;
+  directoryLoadingStartedAt = 0;
+  contentEl.classList.remove("loading");
+  contentLoadingEl.hidden = true;
+  updateButtons();
+}
+
 async function request(path, params, options) {
   const qs = new URLSearchParams(params || {});
   const fetchOptions = Object.assign({ method: "POST" }, options || {});
@@ -125,6 +179,17 @@ async function request(path, params, options) {
 
 async function api(path, params, options) {
   const data = await (await request(path, params, options)).json();
+  if (!data.ok) throw new Error(backendErrorText(data.error_code, data.error_arg, data.error));
+  return data;
+}
+
+async function apiForm(path, params, options) {
+  const fetchOptions = Object.assign({
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams(params || {}).toString()
+  }, options || {});
+  const data = await (await request(path, null, fetchOptions)).json();
   if (!data.ok) throw new Error(backendErrorText(data.error_code, data.error_arg, data.error));
   return data;
 }
@@ -284,10 +349,12 @@ function isTerminalTask(task) {
   return ["done", "failed", "canceled"].includes(task.state);
 }
 
-function trackTask(id, fromClipboard) {
+function trackTask(id, op, fromClipboard, clearClipboardOnDone) {
   trackedTask = {
     id,
+    op,
     fromClipboard: Boolean(fromClipboard),
+    clearClipboardOnDone: Boolean(clearClipboardOnDone),
     cancelRequested: false,
     state: "queued"
   };
@@ -327,7 +394,8 @@ function handleTerminalTask(task) {
     return;
   }
   if (task.state === "done") {
-    if (trackedTask && trackedTask.id === task.id && trackedTask.fromClipboard) clearClipboardAfterPaste();
+    if (trackedTask && trackedTask.id === task.id &&
+        (trackedTask.fromClipboard || trackedTask.clearClipboardOnDone)) clearClipboardAfterPaste();
     clearTrackedTask();
     setStatus(t("actionDone", { label: opLabel(task.op) }));
   }
@@ -342,9 +410,13 @@ function setBusy(value) {
   updateButtons();
 }
 
-function showTaskOverlay() {
+function showTaskOverlay(immediate) {
   setBusy(true);
   if (!overlayEl.hidden || taskOverlayTimer) return;
+  if (immediate) {
+    overlayEl.hidden = false;
+    return;
+  }
   taskOverlayTimer = setTimeout(() => {
     taskOverlayTimer = 0;
     overlayEl.hidden = false;
@@ -543,7 +615,6 @@ async function actionNewText() {
     setBusy(true);
     setStatus(t("creatingText"));
     const data = await api("/api/text/create", { path: dir, name });
-    await load(dir, false, true);
     setBusy(false);
     showTextEditor(item, "", data.version);
   } catch (err) {
@@ -574,6 +645,12 @@ function clipboardTitle() {
 function itemTitle(items) {
   if (!items.length) return "";
   return items.length === 1 ? displayName(items[0]) : t("selectedItems", { name: displayName(items[0]), count: items.length });
+}
+
+function itemCountSuffix(items) {
+  if (items.length <= 1) return "";
+  const text = t("selectedItems", { name: "", count: items.length });
+  return text.replace(/^\s+/, "");
 }
 
 function pathName(path) {
@@ -607,6 +684,7 @@ function renderClipboard() {
   if (!hasClipboard) {
     pasteVerbEl.textContent = t("paste");
     pasteNameEl.textContent = "";
+    pasteCountEl.textContent = "";
     pasteBtn.title = "";
     pasteBtn.disabled = true;
     clearClipboardBtn.disabled = true;
@@ -615,7 +693,8 @@ function renderClipboard() {
 
   const title = clipboardTitle();
   pasteVerbEl.textContent = clipboard.op === "move" ? t("move") : t("paste");
-  pasteNameEl.textContent = title;
+  pasteNameEl.textContent = clipboard.items.length === 1 ? title : displayName(clipboard.items[0]);
+  pasteCountEl.textContent = itemCountSuffix(clipboard.items);
   pasteBtn.title = t("pasteTitle", { label: clipboard.op === "move" ? t("move") : t("paste"), name: title, path: cwd });
   pasteBtn.disabled = locked;
   clearClipboardBtn.disabled = locked;
@@ -704,7 +783,30 @@ function findRowFromTarget(target) {
 function togglePath(path, checked) {
   if (checked) selected.add(path);
   else selected.delete(path);
-  render();
+  const row = filesEl.querySelector("tr[data-path=\"" + cssEscape(path) + "\"]");
+  if (row) {
+    if (checked) row.classList.add("selected");
+    else row.classList.remove("selected");
+    const checkbox = row.querySelector("input[type=\"checkbox\"]");
+    if (checkbox) checkbox.checked = checked;
+  }
+  updateButtons();
+}
+
+function clearSelection() {
+  if (selected.size === 0) {
+    updateButtons();
+    return;
+  }
+  selected.forEach(path => {
+    const row = filesEl.querySelector("tr[data-path=\"" + cssEscape(path) + "\"]");
+    if (!row) return;
+    row.classList.remove("selected");
+    const checkbox = row.querySelector("input[type=\"checkbox\"]");
+    if (checkbox) checkbox.checked = false;
+  });
+  selected.clear();
+  updateButtons();
 }
 
 function render() {
@@ -801,15 +903,14 @@ async function load(path, scrollTop, force) {
   const shouldScrollTop = scrollTop !== false;
   if ((busy && !force) || loadingPath) return;
   loadingPath = path;
-  directoryLoadingTimer = setTimeout(() => {
-    contentLoadingEl.style.top = contentEl.scrollTop + "px";
-    contentLoadingEl.hidden = false;
-    contentEl.classList.add("loading");
-    updateButtons();
-  }, LOADING_DISPLAY_DELAY);
+  startContentLoadingTimer();
   try {
     setStatus(t("readDir"));
     const data = await api("/api/list", { path });
+    if (contentLoadingEl.hidden && data.entries && data.entries.length > 80) {
+      await showContentLoadingAfterDelay();
+    }
+    if (!contentLoadingEl.hidden) await nextPaint();
     cwd = data.path;
     pathEl.textContent = displayPath(cwd);
     savePath(cwd);
@@ -827,24 +928,20 @@ async function load(path, scrollTop, force) {
   } catch (err) {
     setStatus(err.message);
   } finally {
-    clearTimeout(directoryLoadingTimer);
-    contentEl.classList.remove("loading");
-    contentLoadingEl.hidden = true;
+    hideContentLoading();
     loadingPath = null;
-    updateButtons();
   }
 }
 
-async function runAction(label, fn) {
+async function runAction(label, fn, options) {
   try {
     taskRefreshPath = cwd;
     setBusy(true);
     setStatus(t("actionBusy", { label }));
     const data = await fn();
     setStatus(t("taskCreated", { label }));
-    trackTask(data.task_id, false);
-    selected.clear();
-    render();
+    trackTask(data.task_id, "delete", false, options && options.clearClipboardOnDone);
+    clearSelection();
     await pollTasks();
   } catch (err) {
     setBusy(false);
@@ -858,8 +955,7 @@ async function runImmediateAction(label, fn) {
     setBusy(true);
     setStatus(t("actionBusy", { label }));
     await fn();
-    selected.clear();
-    render();
+    clearSelection();
     await load(refreshPath, false, true);
     setStatus(t("actionDone", { label }));
   } catch (err) {
@@ -874,8 +970,7 @@ function setClipboard(op) {
   const items = selectedEntries().map(item => ({ path: item.path, name: item.name, type: item.type }));
   if (items.length === 0) return;
   clipboard = { op, items };
-  selected.clear();
-  render();
+  renderClipboard();
   setStatus(t("selectedForPaste", { name: itemTitle(items), verb: op === "move" ? t("move") : t("paste") }));
 }
 
@@ -886,8 +981,19 @@ function clearClipboard() {
   setStatus(t("clipboardCleared"));
 }
 
+function pathsTouchClipboard(paths) {
+  if (!clipboard || !clipboard.items.length) return false;
+  for (const path of paths) {
+    for (const item of clipboard.items) {
+      if (pathIsSameOrChild(path, item.path)) return true;
+    }
+  }
+  return false;
+}
+
 function validatePasteTarget() {
   const byName = new Map(entries.map(item => [item.name, item]));
+  const sameTargets = [];
   const sameFiles = [];
   const sameDirs = [];
 
@@ -895,10 +1001,8 @@ function validatePasteTarget() {
     const targetPath = pathJoin(cwd, item.name);
     const existing = byName.get(item.name);
     if (item.path === targetPath) {
-      return {
-        ok: false,
-        message: t("sameSourceTarget", { label: clipboard.op === "move" ? t("move") : t("copy"), name: item.name })
-      };
+      sameTargets.push(item.name);
+      continue;
     }
     if (item.type === "d" && pathIsSameOrChild(item.path, targetPath)) {
       return {
@@ -922,6 +1026,15 @@ function validatePasteTarget() {
     if (item.type === "d") sameDirs.push(item.name);
     else sameFiles.push(item.name);
   }
+  if (sameTargets.length) {
+    return {
+      ok: false,
+      message: t("sameSourceTarget", {
+        label: clipboard.op === "move" ? t("move") : t("copy"),
+        name: conflictText(sameTargets)
+      })
+    };
+  }
 
   return { ok: true, sameFiles, sameDirs };
 }
@@ -932,7 +1045,7 @@ function conflictText(names) {
   return names.length > 4 ? t("selectedItems", { name: shown, count: names.length }) : shown;
 }
 
-function renderPendingOverlay(text) {
+function renderPendingOverlay(text, label) {
   tasksEl.innerHTML = "";
   const div = document.createElement("div");
   div.className = "task running";
@@ -941,7 +1054,7 @@ function renderPendingOverlay(text) {
   head.className = "task-head has-amount";
   const name = document.createElement("div");
   name.className = "task-name";
-  name.textContent = t("preparingTask");
+  name.textContent = label || t("preparingTask");
   const amount = document.createElement("div");
   amount.className = "task-amount";
   amount.textContent = t("pleaseWait");
@@ -965,6 +1078,7 @@ function renderPendingOverlay(text) {
     if (pendingAbortController) pendingAbortController.abort();
     pendingAbortController = null;
     pendingOverlayText = "";
+    pendingOverlayLabel = "";
     hideTaskOverlay();
     setStatus(t("cancelPrepare"));
     setBusy(false);
@@ -974,10 +1088,11 @@ function renderPendingOverlay(text) {
   tasksEl.appendChild(div);
 }
 
-function showPendingOverlay(text) {
+function showPendingOverlay(text, label) {
   pendingOverlayText = text;
-  renderPendingOverlay(text);
-  showTaskOverlay();
+  pendingOverlayLabel = label || "";
+  renderPendingOverlay(text, pendingOverlayLabel);
+  showTaskOverlay(true);
 }
 
 function renderTaskPath(element, path) {
@@ -1024,28 +1139,31 @@ async function actionPaste() {
     if (!confirm(lines.join("\n") + "\n\n" + t("continueConfirm"))) return;
   }
 
-  const payload = {
-    paths: clipboard.items.map(item => item.path).join("\n"),
-    dst: cwd,
-    overwrite: hasFileConflicts || hasDirConflicts ? "1" : "0"
-  };
   try {
     pendingAbortController = new AbortController();
     taskRefreshPath = cwd;
-    showPendingOverlay(t("preparingPaste", { label }));
+    showPendingOverlay(t("preparingPaste", { label }), label);
+    setBusy(true);
     setStatus(t("preparingStatus", { label }));
-    const data = await api("/api/" + op, payload, { signal: pendingAbortController.signal });
+    await nextPaint();
+    const payload = {
+      paths: clipboard.items.map(item => item.path).join("\n"),
+      dst: cwd,
+      overwrite: hasFileConflicts || hasDirConflicts ? "1" : "0"
+    };
+    const data = await apiForm("/api/" + op, payload, { signal: pendingAbortController.signal });
     pendingAbortController = null;
     pendingOverlayText = "";
+    pendingOverlayLabel = "";
     setStatus(t("taskCreated", { label }));
-    trackTask(data.task_id, true);
-    selected.clear();
-    render();
+    trackTask(data.task_id, op, true);
+    clearSelection();
     await pollTasks();
   } catch (err) {
     const aborted = err && err.name === "AbortError";
     pendingAbortController = null;
     pendingOverlayText = "";
+    pendingOverlayLabel = "";
     hideTaskOverlay();
     if (aborted) setStatus(t("cancelPrepare"));
     else showActionFailed(label, err.message);
@@ -1057,7 +1175,7 @@ async function actionPaste() {
 function renderTasks(tasks) {
   const active = tasks.find(task => task.state === "queued" || task.state === "running");
   if (!active && pendingOverlayText) {
-    renderPendingOverlay(pendingOverlayText);
+    renderPendingOverlay(pendingOverlayText, pendingOverlayLabel);
     showTaskOverlay();
     return;
   }
@@ -1164,6 +1282,7 @@ async function pollTasks() {
     }
     const wasBusy = busy;
     renderTasks(tasks);
+    if (wasBusy && !busy) startContentLoadingTimer();
     let shouldRefresh = false;
     let sawTrackedTask = false;
     for (const task of tasks) {
@@ -1179,7 +1298,8 @@ async function pollTasks() {
       }
     }
     if (trackedTask && wasBusy && !busy && !sawTrackedTask) {
-      if (trackedTask.fromClipboard && !trackedTask.cancelRequested) clearClipboardAfterPaste();
+      if ((trackedTask.fromClipboard || trackedTask.clearClipboardOnDone) &&
+          !trackedTask.cancelRequested) clearClipboardAfterPaste();
       clearTrackedTask();
       shouldRefresh = true;
     }
@@ -1218,7 +1338,9 @@ function actionDelete() {
   const confirmKey = items.some(item => item.type === "d") ?
     "deleteConfirmRecursive" : "deleteConfirm";
   if (!confirm(t(confirmKey, { name: target }))) return;
-  runAction(t("delete"), () => api("/api/delete", { paths: paths.join("\n") }));
+  runAction(t("delete"), () => apiForm("/api/delete", { paths: paths.join("\n") }), {
+    clearClipboardOnDone: pathsTouchClipboard(paths)
+  });
 }
 
 function actionExit() {
@@ -1281,15 +1403,22 @@ filesEl.addEventListener("click", event => {
     displayName: decodeFsText(row.dataset.name)
   };
   focusPath(item.path);
-  if (item.type === "parent" || item.type === "d") load(item.path);
+  if (item.type === "parent" || item.type === "d") setTimeout(() => load(item.path), 0);
   else if (isPreviewableImage(item)) openImagePreview(item);
   else if (isEditableText(item)) openTextEditor(item);
   else togglePath(item.path, !selected.has(item.path));
 });
-selectAllEl.addEventListener("change", () => {
+selectAllEl.addEventListener("change", async () => {
+  const checked = selectAllEl.checked;
+  const useLoading = entries.length >= SELECT_ALL_LOADING_THRESHOLD;
+  if (useLoading) {
+    showContentLoading(t("processing"));
+    await nextPaint();
+  }
   selected.clear();
-  if (selectAllEl.checked) entries.forEach(item => selected.add(item.path));
+  if (checked) entries.forEach(item => selected.add(item.path));
   render();
+  if (useLoading) hideContentLoading();
 });
 contentEl.addEventListener("mousemove", event => {
   hoverRow(findRowFromTarget(event.target));

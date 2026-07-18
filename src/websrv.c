@@ -13,7 +13,7 @@
 #include "filemgr.h"
 #include "websrv.h"
 
-#define REQUEST_BODY_MAX (1024 * 1024)
+#define REQUEST_BODY_MAX (4 * 1024 * 1024)
 
 typedef struct request_context {
   char *body;
@@ -25,7 +25,7 @@ static enum MHD_Result
 websrv_body_too_large(struct MHD_Connection *conn) {
   static const char json[] =
     "{\"ok\":false,\"error\":\"request body is too large\","
-    "\"error_code\":\"text_file_too_large\",\"error_arg\":\"\"}";
+    "\"error_code\":\"request_body_too_large\",\"error_arg\":\"\"}";
   struct MHD_Response *resp =
     MHD_create_response_from_buffer(sizeof(json) - 1, (void *)json,
                                     MHD_RESPMEM_PERSISTENT);
