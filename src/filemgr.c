@@ -2964,7 +2964,7 @@ api_space(struct MHD_Connection *conn) {
     {"storageUsb", "/mnt/usb5"},
     {"storageUsb", "/mnt/usb6"},
     {"storageUsb", "/mnt/usb7"},
-    {"storageM2", "/mnt/ex1"},
+    {"storageM2", "/mnt/ext1"},
     {"storageExtended", "/mnt/ext0"},
   };
 #endif

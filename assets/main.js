@@ -22,7 +22,7 @@ let textEditorOriginal = "";
 let textEditorBusy = false;
 let L = {};
 
-const APP_VERSION = "v0.8";
+const APP_VERSION = "v0.8b";
 const LAST_PATH_KEY = "ps5-web-file-mgr:last-path";
 const LOADING_DISPLAY_DELAY = 250;
 
