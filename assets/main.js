@@ -24,10 +24,15 @@ let textEditorOriginal = "";
 let textEditorBusy = false;
 let L = {};
 
-const APP_VERSION = "v0.9";
+const APP_VERSION = "v1.0";
 const LAST_PATH_KEY = "ps5-web-file-mgr:last-path";
+const SORT_KEY = "ps5-web-file-mgr:list-sort";
 const LOADING_DISPLAY_DELAY = 250;
 const SELECT_ALL_LOADING_THRESHOLD = 1000;
+const SORT_KEYS = { name: true, type: true, size: true, mtime: true, mode: true };
+
+let sortKey = "";
+let sortDir = "none";
 
 const filesEl = document.getElementById("files");
 const contentEl = document.getElementById("content");
@@ -450,6 +455,28 @@ function savePath(path) {
   }
 }
 
+function readSavedSort() {
+  try {
+    const value = localStorage.getItem(SORT_KEY) || "";
+    const parts = value.split(":");
+    if (value === "none") {
+      sortKey = "";
+      sortDir = "none";
+    } else if (SORT_KEYS[parts[0]] && (parts[1] === "asc" || parts[1] === "desc")) {
+      sortKey = parts[0];
+      sortDir = parts[1];
+    }
+  } catch (err) {
+  }
+}
+
+function saveSort() {
+  try {
+    localStorage.setItem(SORT_KEY, sortDir === "none" ? "none" : sortKey + ":" + sortDir);
+  } catch (err) {
+  }
+}
+
 async function refreshSpaces() {
   try {
     const data = await api("/api/space", { path: cwd });
@@ -575,6 +602,7 @@ async function openTextEditor(item) {
     const message = t("openTextFailed", { error: err.message });
     setStatus(message);
     alert(message);
+    await load(cwd, false, true);
   }
 }
 
@@ -645,6 +673,32 @@ function clipboardTitle() {
 function itemTitle(items) {
   if (!items.length) return "";
   return items.length === 1 ? displayName(items[0]) : t("selectedItems", { name: displayName(items[0]), count: items.length });
+}
+
+function compareText(a, b) {
+  return String(a || "").localeCompare(String(b || ""));
+}
+
+function compareEntries(a, b) {
+  if (sortDir === "none") {
+    if (a.type === "d" && b.type !== "d") return -1;
+    if (a.type !== "d" && b.type === "d") return 1;
+    let defaultResult = compareText(displayName(a), displayName(b));
+    if (!defaultResult) defaultResult = compareText(a.path, b.path);
+    return defaultResult;
+  }
+
+  let result = 0;
+  if (sortKey === "name") result = compareText(displayName(a), displayName(b));
+  else if (sortKey === "type") result = compareText(typeLabel(a.type), typeLabel(b.type));
+  else if (sortKey === "size") result = (a.type === "d" ? 0 : Number(a.size || 0)) -
+    (b.type === "d" ? 0 : Number(b.size || 0));
+  else if (sortKey === "mtime") result = Number(a.mtime || 0) - Number(b.mtime || 0);
+  else if (sortKey === "mode") result = Number(a.mode || 0) - Number(b.mode || 0);
+
+  if (!result) result = compareText(displayName(a), displayName(b));
+  if (!result) result = compareText(a.path, b.path);
+  return sortDir === "desc" ? -result : result;
 }
 
 function itemCountSuffix(items) {
@@ -719,6 +773,41 @@ function updateButtons() {
   selectAllEl.checked = entries.length > 0 && items.length === entries.length;
   selectAllEl.indeterminate = items.length > 0 && items.length < entries.length;
   renderClipboard();
+}
+
+function updateSortHeaders() {
+  const headers = document.querySelectorAll("th[data-sort]");
+  for (const th of headers) {
+    const key = th.getAttribute("data-sort");
+    th.classList.remove("sorted-asc");
+    th.classList.remove("sorted-desc");
+    th.setAttribute("aria-sort", key === sortKey && sortDir !== "none" ?
+      (sortDir === "asc" ? "ascending" : "descending") : "none");
+    if (key === sortKey && sortDir !== "none") th.classList.add(sortDir === "asc" ? "sorted-asc" : "sorted-desc");
+  }
+}
+
+async function setSort(key) {
+  if (!SORT_KEYS[key]) return;
+  if (sortKey !== key || sortDir === "none") {
+    sortKey = key;
+    sortDir = "asc";
+  } else if (sortDir === "asc") {
+    sortDir = "desc";
+  } else {
+    sortKey = "";
+    sortDir = "none";
+  }
+  saveSort();
+  updateSortHeaders();
+  const useLoading = entries.length >= SELECT_ALL_LOADING_THRESHOLD;
+  if (useLoading) {
+    showContentLoading(t("processing"));
+    await nextPaint();
+  }
+  entries.sort(compareEntries);
+  render();
+  if (useLoading) hideContentLoading();
 }
 
 function focusPath(path) {
@@ -899,7 +988,7 @@ function classCell(className, text) {
   return td;
 }
 
-async function load(path, scrollTop, force) {
+async function load(path, scrollTop, force, alertOnError) {
   const shouldScrollTop = scrollTop !== false;
   if ((busy && !force) || loadingPath) return;
   loadingPath = path;
@@ -915,18 +1004,17 @@ async function load(path, scrollTop, force) {
     pathEl.textContent = displayPath(cwd);
     savePath(cwd);
     refreshSpaces();
-    entries = data.entries.sort((a, b) => {
-      if (a.type === "d" && b.type !== "d") return -1;
-      if (a.type !== "d" && b.type === "d") return 1;
-      return displayName(a).localeCompare(displayName(b));
-    });
+    entries = data.entries.sort(compareEntries);
     selected.clear();
     focusedPath = null;
     render();
     if (shouldScrollTop) resetScrollTop();
     setStatus(t("totalItems", { count: entries.length }));
+    return true;
   } catch (err) {
     setStatus(err.message);
+    if (alertOnError) alert(err.message);
+    return false;
   } finally {
     hideContentLoading();
     loadingPath = null;
@@ -1371,6 +1459,11 @@ textEditorCloseBtn.addEventListener("click", requestCloseTextEditor);
 textEditorSaveBtn.addEventListener("click", saveTextEditor);
 newTextBtn.addEventListener("click", actionNewText);
 imagePreviewCloseBtn.addEventListener("click", closeImagePreview);
+document.querySelector("thead").addEventListener("click", event => {
+  let target = event.target;
+  while (target && target.tagName !== "TH") target = target.parentNode;
+  if (target && target.getAttribute("data-sort")) setSort(target.getAttribute("data-sort"));
+});
 textEditorOverlayEl.addEventListener("click", event => {
   if (event.target === textEditorOverlayEl) requestCloseTextEditor();
 });
@@ -1403,7 +1496,11 @@ filesEl.addEventListener("click", event => {
     displayName: decodeFsText(row.dataset.name)
   };
   focusPath(item.path);
-  if (item.type === "parent" || item.type === "d") setTimeout(() => load(item.path), 0);
+  if (item.type === "parent" || item.type === "d") {
+    setTimeout(async () => {
+      if (!(await load(item.path, undefined, false, true))) await load(cwd, false, true);
+    }, 0);
+  }
   else if (isPreviewableImage(item)) openImagePreview(item);
   else if (isEditableText(item)) openTextEditor(item);
   else togglePath(item.path, !selected.has(item.path));
@@ -1436,14 +1533,19 @@ contentEl.addEventListener("scroll", () => {
 async function init() {
   await loadLanguage();
   applyStaticText();
+  readSavedSort();
+  updateSortHeaders();
   const savedPath = readSavedPath();
   cwd = savedPath;
   pathEl.textContent = displayPath(cwd);
   taskRefreshPath = savedPath;
   refreshSpaces();
   await pollTasks();
-  if (!busy) await load("/");
-  else setStatus(t("activeTask"));
+  if (busy) {
+    setStatus(t("activeTask"));
+    return;
+  }
+  if (!(await load(savedPath || "/")) && savedPath !== "/") await load("/");
 }
 
 init();
