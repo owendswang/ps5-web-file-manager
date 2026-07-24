@@ -19,6 +19,8 @@ typedef struct request_context {
   char *body;
   size_t size;
   int too_large;
+  int upload_stream;
+  void *upload_ctx;
 } request_context_t;
 
 static enum MHD_Result
@@ -68,12 +70,26 @@ websrv_on_request(void *cls, struct MHD_Connection *conn, const char *url,
     if(!(ctx = calloc(1, sizeof(*ctx)))) {
       return MHD_NO;
     }
+    ctx->upload_stream = !strcmp(url, "/api/upload-file") &&
+                         !strcmp(method, MHD_HTTP_METHOD_POST);
     *con_cls = ctx;
     return MHD_YES;
   }
 
   if(*upload_data_size) {
     size_t chunk_size = *upload_data_size;
+
+    if(ctx->upload_stream) {
+      if(!ctx->upload_ctx && filemgr_upload_begin(conn, &ctx->upload_ctx)) {
+        ctx->too_large = 1;
+      }
+      if(ctx->upload_ctx && filemgr_upload_data(ctx->upload_ctx, upload_data,
+                                                chunk_size)) {
+        ctx->too_large = 1;
+      }
+      *upload_data_size = 0;
+      return MHD_YES;
+    }
 
     if(chunk_size > REQUEST_BODY_MAX - ctx->size) {
       ctx->too_large = 1;
@@ -92,7 +108,16 @@ websrv_on_request(void *cls, struct MHD_Connection *conn, const char *url,
   }
 
   if(ctx->too_large) {
-    return websrv_body_too_large(conn);
+    return ctx->upload_stream ?
+      filemgr_upload_finish(conn, ctx->upload_ctx) :
+      websrv_body_too_large(conn);
+  }
+
+  if(ctx->upload_stream) {
+    if(!ctx->upload_ctx && filemgr_upload_begin(conn, &ctx->upload_ctx)) {
+      return filemgr_upload_finish(conn, ctx->upload_ctx);
+    }
+    return filemgr_upload_finish(conn, ctx->upload_ctx);
   }
 
   if(!strncmp(url, "/api/", 5)) {
@@ -116,6 +141,9 @@ websrv_on_completed(void *cls, struct MHD_Connection *connection,
   request_context_t *ctx = *con_cls;
 
   if(ctx) {
+    if(ctx->upload_ctx) {
+      filemgr_upload_free(ctx->upload_ctx);
+    }
     free(ctx->body);
     free(ctx);
   }

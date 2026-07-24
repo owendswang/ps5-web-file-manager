@@ -22,12 +22,15 @@ let textEditorPath = null;
 let textEditorVersion = null;
 let textEditorOriginal = "";
 let textEditorBusy = false;
+let downloadFrame = null;
+let uploadXhr = null;
 let L = {};
 
 const APP_VERSION = "v1.0";
 const LAST_PATH_KEY = "ps5-web-file-mgr:last-path";
 const SORT_KEY = "ps5-web-file-mgr:list-sort";
 const LOADING_DISPLAY_DELAY = 250;
+const DOWNLOAD_OVERLAY_DISPLAY_DELAY = 1200;
 const SELECT_ALL_LOADING_THRESHOLD = 1000;
 const SORT_KEYS = { name: true, type: true, size: true, mtime: true, mode: true };
 
@@ -52,6 +55,13 @@ const pasteNameEl = document.getElementById("pasteName");
 const pasteCountEl = document.getElementById("pasteCount");
 const pasteTargetTextEl = document.getElementById("pasteTargetText");
 const clearClipboardBtn = document.getElementById("clearClipboardBtn");
+const downloadBtn = document.getElementById("downloadBtn");
+const uploadMenuEl = document.getElementById("uploadMenu");
+const uploadBtn = document.getElementById("uploadBtn");
+const uploadMenuBtn = document.getElementById("uploadMenuBtn");
+const uploadFolderBtn = document.getElementById("uploadFolderBtn");
+const uploadFilesEl = document.getElementById("uploadFiles");
+const uploadFolderEl = document.getElementById("uploadFolder");
 const initLoadingEl = document.getElementById("initLoading");
 const exitBtn = document.getElementById("exitBtn");
 const textEditorOverlayEl = document.getElementById("textEditorOverlay");
@@ -115,6 +125,9 @@ function applyStaticText() {
   document.title = t("appTitle");
   for (const el of document.querySelectorAll("[data-i18n]")) {
     el.textContent = t(el.dataset.i18n);
+  }
+  if (isPlayStationBrowser()) {
+    for (const el of document.querySelectorAll(".remote-only")) el.hidden = true;
   }
   exitBtn.title = t("exit");
   exitBtn.setAttribute("aria-label", t("exit"));
@@ -339,11 +352,15 @@ function taskElapsed(task) {
 }
 
 function opLabel(op) {
-  return { copy: t("copy"), move: t("move"), delete: t("delete") }[op] || op;
+  return { copy: t("copy"), move: t("move"), delete: t("delete"), download: t("download"), upload: t("upload") }[op] || op;
 }
 
 function taskOpLabel(op) {
-  return { copy: t("copying"), move: t("moving"), delete: t("deleting") }[op] || op;
+  return { copy: t("copying"), move: t("moving"), delete: t("deleting"), download: t("downloading"), upload: t("uploading") }[op] || op;
+}
+
+function isPlayStationBrowser() {
+  return /PlayStation/i.test(navigator.userAgent || "");
 }
 
 function stateLabel(state) {
@@ -370,6 +387,10 @@ function requestTaskCancel(id) {
 }
 
 function clearTrackedTask() {
+  if (trackedTask && trackedTask.op === "download" && downloadFrame) {
+    downloadFrame.parentNode.removeChild(downloadFrame);
+    downloadFrame = null;
+  }
   trackedTask = null;
 }
 
@@ -415,7 +436,7 @@ function setBusy(value) {
   updateButtons();
 }
 
-function showTaskOverlay(immediate) {
+function showTaskOverlay(immediate, delay) {
   setBusy(true);
   if (!overlayEl.hidden || taskOverlayTimer) return;
   if (immediate) {
@@ -425,7 +446,7 @@ function showTaskOverlay(immediate) {
   taskOverlayTimer = setTimeout(() => {
     taskOverlayTimer = 0;
     overlayEl.hidden = false;
-  }, LOADING_DISPLAY_DELAY);
+  }, delay || LOADING_DISPLAY_DELAY);
 }
 
 function hideTaskOverlay() {
@@ -766,7 +787,11 @@ function updateButtons() {
   document.getElementById("moveBtn").disabled = locked || items.length === 0;
   document.getElementById("renameBtn").disabled = locked || items.length !== 1;
   document.getElementById("deleteBtn").disabled = locked || items.length === 0;
+  downloadBtn.disabled = locked || items.length === 0;
   document.getElementById("refreshBtn").disabled = locked;
+  uploadBtn.disabled = locked;
+  uploadMenuBtn.disabled = locked;
+  uploadFolderBtn.disabled = locked;
   document.getElementById("mkdirBtn").disabled = locked;
   newTextBtn.disabled = locked;
   selectAllEl.disabled = locked;
@@ -788,6 +813,7 @@ function updateSortHeaders() {
 }
 
 async function setSort(key) {
+  if (busy || loadingPath) return;
   if (!SORT_KEYS[key]) return;
   if (sortKey !== key || sortDir === "none") {
     sortKey = key;
@@ -1270,7 +1296,8 @@ function renderTasks(tasks) {
 
   tasksEl.innerHTML = "";
   const hasActive = Boolean(active);
-  if (hasActive) showTaskOverlay();
+  if (hasActive) showTaskOverlay(false, active.op === "download" ?
+    DOWNLOAD_OVERLAY_DISPLAY_DELAY : LOADING_DISPLAY_DELAY);
   else {
     hideTaskOverlay();
     setBusy(false);
@@ -1283,9 +1310,10 @@ function renderTasks(tasks) {
   const done = Number(task.done || 0);
   const speed = Number(task.speed || 0);
   const isDelete = task.op === "delete";
+  const isDownload = task.op === "download";
   const isPreparing = (task.op === "copy" || task.op === "move") &&
     task.state === "running" && done === 0;
-  const isFinishing = !isDelete && task.state === "running" && total > 0 && done >= total;
+  const isFinishing = !isDelete && !isDownload && task.state === "running" && total > 0 && done >= total;
   const pct = total > 0 ? Math.min(100, Math.floor(done * 100 / total)) : 0;
   const div = document.createElement("div");
   div.className = "task " + task.state;
@@ -1326,7 +1354,9 @@ function renderTasks(tasks) {
   bar.style.width = isDelete ? "0" : pct + "%";
   const progressText = document.createElement("div");
   progressText.className = "progress-text";
-  progressText.textContent = isPreparing ? t("preparing") : isFinishing ? t("finishing") : total ? pct + "%" : stateLabel(task.state);
+  progressText.textContent = isDownload ? (total ? pct + "%" : t("preparing")) :
+    isPreparing ? t("preparing") : isFinishing ? t("finishing") :
+    total ? pct + "%" : stateLabel(task.state);
   appendChildren(progress, bar, progressText);
 
   const cancel = document.createElement("button");
@@ -1336,7 +1366,10 @@ function renderTasks(tasks) {
   bindPress(cancel, () => {
     if (confirm(t("cancelTaskConfirm", { label: opLabel(task.op) }))) {
       requestTaskCancel(task.id);
-      api("/api/cancel", { id: task.id }).then(pollTasks).catch(err => {
+      api("/api/cancel", { id: task.id }).then(() => {
+        if (task.op === "upload" && uploadXhr) uploadXhr.abort();
+        return pollTasks();
+      }).catch(err => {
         if (trackedTask && trackedTask.id === task.id) trackedTask.cancelRequested = false;
         setStatus(t("cancelFailed", { error: err.message }));
       });
@@ -1388,10 +1421,11 @@ async function pollTasks() {
     if (trackedTask && wasBusy && !busy && !sawTrackedTask) {
       if ((trackedTask.fromClipboard || trackedTask.clearClipboardOnDone) &&
           !trackedTask.cancelRequested) clearClipboardAfterPaste();
-      clearTrackedTask();
       shouldRefresh = true;
+      clearTrackedTask();
     }
-    if (shouldRefresh || (wasBusy && !busy)) {
+    if (shouldRefresh) {
+      clearSelection();
       await load(taskRefreshPath || cwd, false);
       await refreshSpaces();
     }
@@ -1431,6 +1465,152 @@ function actionDelete() {
   });
 }
 
+async function actionDownload() {
+  if (busy || loadingPath || selected.size === 0) return;
+  const items = selectedEntries();
+  const label = t("download");
+  try {
+    setBusy(true);
+    taskRefreshPath = cwd;
+    setStatus(t("actionBusy", { label }));
+    const data = await apiForm("/api/download/prepare", {
+      paths: items.map(item => item.path).join("\n")
+    });
+    trackTask(data.task_id, "download", false);
+    if (downloadFrame) downloadFrame.parentNode.removeChild(downloadFrame);
+    downloadFrame = document.createElement("iframe");
+    downloadFrame.hidden = true;
+    downloadFrame.src = "/api/download?id=" + encodeURIComponent(data.task_id);
+    document.body.appendChild(downloadFrame);
+    setStatus(t("downloadStarted", { name: itemTitle(items) }));
+    await pollTasks();
+  } catch (err) {
+    setBusy(false);
+    showActionFailed(label, err.message);
+  }
+}
+
+function uploadRelativeName(file) {
+  return file.webkitRelativePath || file.name;
+}
+
+function uploadConflicts(files) {
+  const names = {};
+  const conflicts = [];
+  for (const item of entries) names[item.name] = true;
+  for (const file of files) {
+    const rel = uploadRelativeName(file);
+    const top = rel.split("/")[0];
+    if (names[top] && conflicts.indexOf(top) < 0) conflicts.push(top);
+  }
+  return conflicts;
+}
+
+function uploadFileRequest(taskId, file, rel, overwrite) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    uploadXhr = xhr;
+    xhr.open("POST", "/api/upload-file", true);
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.setRequestHeader("X-WFM-Task-ID", String(taskId));
+    xhr.setRequestHeader("X-WFM-Path", encodeURIComponent(cwd));
+    xhr.setRequestHeader("X-WFM-Rel", encodeURIComponent(rel));
+    xhr.setRequestHeader("X-WFM-Size", String(file.size));
+    xhr.setRequestHeader("X-WFM-Overwrite", overwrite ? "1" : "0");
+    xhr.onload = () => {
+      uploadXhr = null;
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve();
+        return;
+      }
+      try {
+        const data = JSON.parse(xhr.responseText || "{}");
+        reject(new Error(backendErrorText(data.error_code, data.error_arg, data.error)));
+      } catch (err) {
+        reject(new Error(xhr.statusText || String(xhr.status)));
+      }
+    };
+    xhr.onerror = () => {
+      uploadXhr = null;
+      reject(new Error(xhr.statusText || t("backendError")));
+    };
+    xhr.onabort = () => {
+      uploadXhr = null;
+      const err = new Error("aborted");
+      err.name = "AbortError";
+      reject(err);
+    };
+    xhr.send(file);
+  });
+}
+
+async function uploadFiles(files) {
+  if (busy || loadingPath || !files.length) return;
+  const list = Array.prototype.slice.call(files);
+  const conflicts = uploadConflicts(list);
+  const overwrite = conflicts.length &&
+    confirm(t("uploadOverwriteConfirm", { names: conflictText(conflicts) }));
+  if (conflicts.length && !overwrite) return;
+
+  const total = list.reduce((sum, file) => sum + Number(file.size || 0), 0);
+  let taskId = 0;
+
+  try {
+    setBusy(true);
+    taskRefreshPath = cwd;
+    const task = await apiForm("/api/upload/prepare", {
+      path: cwd,
+      src: uploadRelativeName(list[0]),
+      total,
+      count: list.length
+    });
+    taskId = task.task_id;
+    trackTask(taskId, "upload", false);
+    await pollTasks();
+    for (let i = 0; i < list.length; i++) {
+      const file = list[i];
+      const rel = uploadRelativeName(file);
+      setStatus(t("uploadingStatus", { index: i + 1, count: list.length, name: rel }));
+      await uploadFileRequest(taskId, file, rel, overwrite);
+    }
+    await api("/api/upload/finish", { task_id: taskId });
+    await pollTasks();
+    setStatus(t("uploadDone", { count: list.length }));
+  } catch (err) {
+    const canceled = err && err.name === "AbortError";
+    if (canceled) {
+      setStatus(t("taskCanceled", { label: opLabel("upload") }));
+    } else {
+      const message = t("uploadFailed", { error: err.message });
+      setStatus(message);
+      alert(message);
+    }
+    await pollTasks();
+  } finally {
+    uploadXhr = null;
+    uploadFilesEl.value = "";
+    uploadFolderEl.value = "";
+    if (!trackedTask) setBusy(false);
+  }
+}
+
+function actionUploadFiles() {
+  if (busy || loadingPath) return;
+  uploadMenuEl.classList.remove("open");
+  uploadFilesEl.click();
+}
+
+function actionUploadFolder() {
+  if (busy || loadingPath) return;
+  uploadMenuEl.classList.remove("open");
+  uploadFolderEl.click();
+}
+
+function toggleUploadMenu() {
+  if (busy || loadingPath) return;
+  uploadMenuEl.classList.toggle("open");
+}
+
 function actionExit() {
   setStatus(t("exiting"));
   exitBtn.disabled = true;
@@ -1453,13 +1633,24 @@ document.getElementById("moveBtn").addEventListener("click", actionMove);
 pasteBtn.addEventListener("click", actionPaste);
 clearClipboardBtn.addEventListener("click", clearClipboard);
 document.getElementById("renameBtn").addEventListener("click", actionRename);
+downloadBtn.addEventListener("click", actionDownload);
 document.getElementById("deleteBtn").addEventListener("click", actionDelete);
+uploadBtn.addEventListener("click", actionUploadFiles);
+uploadMenuBtn.addEventListener("click", toggleUploadMenu);
+uploadFolderBtn.addEventListener("click", actionUploadFolder);
+uploadFilesEl.addEventListener("change", () => uploadFiles(uploadFilesEl.files));
+uploadFolderEl.addEventListener("change", () => uploadFiles(uploadFolderEl.files));
 exitBtn.addEventListener("click", actionExit);
 textEditorCloseBtn.addEventListener("click", requestCloseTextEditor);
 textEditorSaveBtn.addEventListener("click", saveTextEditor);
 newTextBtn.addEventListener("click", actionNewText);
 imagePreviewCloseBtn.addEventListener("click", closeImagePreview);
+document.addEventListener("click", event => {
+  if (!uploadMenuEl || uploadMenuEl.contains(event.target)) return;
+  uploadMenuEl.classList.remove("open");
+});
 document.querySelector("thead").addEventListener("click", event => {
+  if (busy || loadingPath) return;
   let target = event.target;
   while (target && target.tagName !== "TH") target = target.parentNode;
   if (target && target.getAttribute("data-sort")) setSort(target.getAttribute("data-sort"));
@@ -1471,7 +1662,7 @@ imagePreviewOverlayEl.addEventListener("click", event => {
   if (event.target === imagePreviewOverlayEl) closeImagePreview();
 });
 contentEl.addEventListener("click", event => {
-  if (!loadingPath) return;
+  if (!busy && !loadingPath) return;
   event.preventDefault();
   event.stopPropagation();
 }, true);
@@ -1480,10 +1671,18 @@ filesEl.addEventListener("focusin", event => {
   if (row) focusPath(row.dataset.path);
 });
 filesEl.addEventListener("change", event => {
+  if (busy || loadingPath) {
+    event.preventDefault();
+    return;
+  }
   const row = findRowFromTarget(event.target);
   if (row && event.target.type === "checkbox") togglePath(row.dataset.path, event.target.checked);
 });
 filesEl.addEventListener("click", event => {
+  if (busy || loadingPath) {
+    event.preventDefault();
+    return;
+  }
   const row = findRowFromTarget(event.target);
   if (!row) return;
   let target = event.target;
@@ -1506,6 +1705,10 @@ filesEl.addEventListener("click", event => {
   else togglePath(item.path, !selected.has(item.path));
 });
 selectAllEl.addEventListener("change", async () => {
+  if (busy || loadingPath) {
+    selectAllEl.checked = selected.size > 0 && selected.size === entries.length;
+    return;
+  }
   const checked = selectAllEl.checked;
   const useLoading = entries.length >= SELECT_ALL_LOADING_THRESHOLD;
   if (useLoading) {

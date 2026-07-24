@@ -213,6 +213,64 @@ body {
   flex: 1 1 auto;
 }
 
+.split-button {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+  height: 54px;
+  min-height: 54px;
+  margin-bottom: 15px;
+}
+
+.split-button .split-main {
+  min-width: 82px;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  margin: 0;
+}
+
+.split-button .split-arrow {
+  min-width: 38px;
+  width: 38px;
+  padding: 0;
+  border-left: 0;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  margin: 0;
+}
+
+.split-arrow::before {
+  content: "";
+  display: block;
+  width: 0;
+  height: 0;
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-top: 7px solid #f2f5f7;
+}
+
+.split-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 40;
+  display: none;
+  min-width: 150px;
+  padding-top: 6px;
+}
+
+.split-menu button {
+  width: 100%;
+  min-width: 150px;
+  margin: 0;
+  white-space: nowrap;
+}
+
+.split-button:hover .split-menu,
+.split-button.open .split-menu {
+  display: block;
+}
+
 button,
 .button {
   height: 54px;
@@ -866,6 +924,30 @@ input[type="checkbox"] {
     padding: 0 12px;
     border-radius: 6px;
     font-size: 16px;
+  }
+
+  .split-button {
+    height: 40px;
+    min-height: 40px;
+    margin-bottom: 8px;
+  }
+
+  .split-button .split-main {
+    min-width: 64px;
+  }
+
+  .split-button .split-arrow {
+    min-width: 34px;
+    width: 34px;
+  }
+
+  .split-menu {
+    min-width: 126px;
+    padding-top: 4px;
+  }
+
+  .split-menu button {
+    min-width: 126px;
   }
 
   .paste-action {

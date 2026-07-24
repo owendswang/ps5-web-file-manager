@@ -40,6 +40,7 @@
         <button id="copyBtn" data-i18n="copy"></button>
         <button id="moveBtn" data-i18n="move"></button>
         <button id="renameBtn" data-i18n="rename"></button>
+        <button id="downloadBtn" class="remote-only" data-i18n="download"></button>
         <button id="deleteBtn" class="danger" data-i18n="delete"></button>
         <button id="pasteBtn" class="paste-action" hidden>
           <span id="pasteVerb" data-i18n="paste"></span>
@@ -50,10 +51,19 @@
       </div>
       <div class="tool-right">
         <button id="refreshBtn" data-i18n="refresh"></button>
+        <div id="uploadMenu" class="split-button remote-only">
+          <button id="uploadBtn" class="split-main" data-i18n="upload"></button>
+          <button id="uploadMenuBtn" class="split-arrow" type="button" aria-label="Upload menu"></button>
+          <div class="split-menu">
+            <button id="uploadFolderBtn" type="button" data-i18n="uploadFolder"></button>
+          </div>
+        </div>
         <button id="newTextBtn" data-i18n="newText"></button>
         <button id="mkdirBtn" data-i18n="mkdir"></button>
       </div>
     </section>
+    <input id="uploadFiles" type="file" multiple hidden>
+    <input id="uploadFolder" type="file" multiple webkitdirectory hidden>
 
     <section id="content" class="content">
       <table>

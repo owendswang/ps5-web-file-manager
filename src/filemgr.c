@@ -36,6 +36,7 @@
 #define TRANSFER_ALERT_THRESHOLD (10 * 60)
 #define ETA_AVERAGE_WINDOW_SECONDS 30
 #define ETA_SAMPLE_SLOTS 64
+#define DOWNLOAD_ARCHIVE_NAME_LIMIT 20
 typedef struct strbuf {
   char *data;
   size_t len;
@@ -46,6 +47,8 @@ typedef enum task_op {
   TASK_COPY,
   TASK_MOVE,
   TASK_DELETE,
+  TASK_DOWNLOAD,
+  TASK_UPLOAD,
 } task_op_t;
 
 typedef enum task_state {
@@ -102,7 +105,60 @@ typedef struct task_completion {
   time_t elapsed;
 } task_completion_t;
 
+typedef struct upload_context {
+  file_task_t *task;
+  char target[PATH_MAX];
+  char temp[PATH_MAX];
+  int fd;
+  int failed;
+  int error;
+  unsigned long long expected;
+  unsigned long long written;
+  int task_done;
+} upload_context_t;
+
+typedef struct tar_frame {
+  char path[PATH_MAX];
+  char name[PATH_MAX];
+  DIR *dir;
+  int header_sent;
+  struct tar_frame *next;
+} tar_frame_t;
+
+typedef struct tar_stream {
+  file_task_t *task;
+  char **paths;
+  size_t path_count;
+  size_t path_index;
+  size_t stack_depth;
+  tar_frame_t *stack;
+  int fd;
+  char current_file[PATH_MAX];
+  unsigned long long file_remaining;
+  size_t file_padding;
+  size_t pad_remaining;
+  char *pending;
+  size_t pending_size;
+  size_t pending_offset;
+  int final_blocks;
+  int done;
+  int error;
+} tar_stream_t;
+
+typedef struct download_file_stream {
+  file_task_t *task;
+  FILE *file;
+  unsigned long long size;
+  unsigned long long sent;
+  int done;
+  int error;
+} download_file_stream_t;
+
 static char *fs_path_value(char *path);
+static int ensure_copy_dir(const char *path);
+static ssize_t file_read(void *cls, uint64_t pos, char *buf, size_t max);
+static void file_close(void *cls);
+static char *form_decode(const char *src, size_t len);
 #if FILEMGR_PIPELINE_COPY
 typedef struct copy_pipeline_slot {
   char *data;
@@ -225,6 +281,19 @@ query_value(struct MHD_Connection *conn, const char *key) {
     value[end - start] = 0;
   }
   return value;
+}
+
+static char *
+header_value(struct MHD_Connection *conn, const char *key) {
+  const char *raw = MHD_lookup_connection_value(conn, MHD_HEADER_KIND, key);
+  return raw ? form_decode(raw, strlen(raw)) : NULL;
+}
+
+static char *
+request_value(struct MHD_Connection *conn, const char *header,
+              const char *query) {
+  char *value = header_value(conn, header);
+  return value ? value : query_value(conn, query);
 }
 
 static int
@@ -372,6 +441,31 @@ path_basename(const char *path) {
   return base;
 }
 
+static void
+path_basename_copy(const char *path, char *out, size_t size) {
+  const char *end = path + strlen(path);
+  const char *base;
+  size_t len;
+
+  while(end > path && end[-1] == '/') {
+    end--;
+  }
+  base = end;
+  while(base > path && base[-1] != '/') {
+    base--;
+  }
+  len = (size_t)(end - base);
+  if(!len) {
+    snprintf(out, size, "root");
+    return;
+  }
+  if(len >= size) {
+    len = size - 1;
+  }
+  memcpy(out, base, len);
+  out[len] = 0;
+}
+
 static int
 path_dirname(const char *path, char *out, size_t size) {
   const char *base = path_basename(path);
@@ -408,6 +502,92 @@ path_join(char *out, size_t size, const char *dir, const char *name) {
   return 0;
 }
 
+static int
+relative_path_safe(const char *path) {
+  const char *p = path;
+
+  if(!path || !path[0] || path[0] == '/') {
+    errno = EINVAL;
+    return 0;
+  }
+  while(*p) {
+    const char *start = p;
+    size_t len;
+
+    while(*p && *p != '/') {
+      if(*p == '\\') {
+        errno = EINVAL;
+        return 0;
+      }
+      p++;
+    }
+    len = (size_t)(p - start);
+    if(!len || (len == 1 && start[0] == '.') ||
+       (len == 2 && start[0] == '.' && start[1] == '.')) {
+      errno = EINVAL;
+      return 0;
+    }
+    if(*p == '/') {
+      p++;
+    }
+  }
+  return 1;
+}
+
+static int
+path_join_relative(char *out, size_t size, const char *dir, const char *rel) {
+  int n;
+
+  if(!relative_path_safe(rel)) {
+    return -1;
+  }
+  n = snprintf(out, size, "%s%s%s", dir,
+               (strcmp(dir, "/") && dir[strlen(dir) - 1] != '/') ? "/" : "",
+               rel);
+  if(n < 0 || (size_t)n >= size) {
+    errno = ENAMETOOLONG;
+    return -1;
+  }
+  return 0;
+}
+
+static int
+ensure_parent_dirs(const char *base, const char *rel) {
+  char current[PATH_MAX];
+  const char *p = rel;
+  size_t base_len;
+
+  if(!relative_path_safe(rel)) {
+    return -1;
+  }
+  if(strlen(base) >= sizeof(current)) {
+    errno = ENAMETOOLONG;
+    return -1;
+  }
+  strcpy(current, base);
+  base_len = strlen(current);
+  while(*p) {
+    const char *slash = strchr(p, '/');
+    size_t len;
+
+    if(!slash) {
+      return 0;
+    }
+    len = (size_t)(slash - rel);
+    if(base_len + (strcmp(base, "/") ? 1 : 0) + len >= sizeof(current)) {
+      errno = ENAMETOOLONG;
+      return -1;
+    }
+    snprintf(current, sizeof(current), "%s%s%.*s", base,
+             strcmp(base, "/") ? "/" : "", (int)len, rel);
+    if(ensure_copy_dir(current)) {
+      return -1;
+    }
+    p = slash + 1;
+  }
+  return 0;
+}
+
 static char
 mode_type(const struct stat *st) {
   if(S_ISDIR(st->st_mode)) return 'd';
@@ -425,6 +605,8 @@ task_op_name(task_op_t op) {
   case TASK_COPY: return "copy";
   case TASK_MOVE: return "move";
   case TASK_DELETE: return "delete";
+  case TASK_DOWNLOAD: return "download";
+  case TASK_UPLOAD: return "upload";
   default: return "unknown";
   }
 }
@@ -505,6 +687,18 @@ task_cancel_requested(file_task_t *task) {
     errno = ECANCELED;
   }
   return cancel;
+}
+
+static file_task_t *
+find_task_locked(unsigned long id) {
+  file_task_t *task;
+
+  for(task = g_tasks; task; task = task->next) {
+    if(task->id == id) {
+      return task;
+    }
+  }
+  return NULL;
 }
 
 static long long
@@ -2652,6 +2846,352 @@ check_task_targets_writable(file_task_t *task, char *error, size_t error_size,
   return 0;
 }
 
+static void
+finish_upload_task(file_task_t *task, task_state_t state, const char *current,
+                   const char *error) {
+  if(!task) {
+    return;
+  }
+  pthread_mutex_lock(&g_tasks_lock);
+  if(task_is_active(task)) {
+    task->state = state;
+    if(current) {
+      snprintf(task->current, sizeof(task->current), "%s", current);
+    }
+    if(state == TASK_DONE && task->total) {
+      task->done = task->total;
+    }
+    if(error) {
+      snprintf(task->error, sizeof(task->error), "%s", error);
+    }
+    task->updated_at = time(NULL);
+  }
+  pthread_mutex_unlock(&g_tasks_lock);
+}
+
+static file_task_t *
+upload_task_from_conn(struct MHD_Connection *conn) {
+  char *idstr = request_value(conn, "X-WFM-Task-ID", "task_id");
+  unsigned long id = idstr ? strtoul(idstr, NULL, 10) : 0;
+  file_task_t *task = NULL;
+
+  free(idstr);
+  if(!id) {
+    return NULL;
+  }
+  pthread_mutex_lock(&g_tasks_lock);
+  task = find_task_locked(id);
+  if(!task || task->op != TASK_UPLOAD || !task_is_active(task)) {
+    task = NULL;
+  }
+  pthread_mutex_unlock(&g_tasks_lock);
+  return task;
+}
+
+static enum MHD_Result
+api_upload_prepare(struct MHD_Connection *conn, const char *body,
+                   size_t body_size) {
+  char *path = fs_path_value(body_form_value(body, body_size, "path"));
+  char *src = fs_path_value(body_form_value(body, body_size, "src"));
+  char *total_text = body_form_value(body, body_size, "total");
+  char *count_text = body_form_value(body, body_size, "count");
+  file_task_t *task = calloc(1, sizeof(*task));
+  strbuf_t b = {0};
+  unsigned long long total = total_text ? strtoull(total_text, NULL, 10) : 0;
+  size_t count = count_text ? (size_t)strtoull(count_text, NULL, 10) : 0;
+
+  if(!task) {
+    free(path); free(src); free(total_text); free(count_text);
+    return send_json_error(conn, MHD_HTTP_INTERNAL_SERVER_ERROR, "out of memory");
+  }
+  if(!path || !src || !count) {
+    free_task(task);
+    free(path); free(src); free(total_text); free(count_text);
+    return send_json_error(conn, MHD_HTTP_BAD_REQUEST, "invalid path");
+  }
+
+  task->op = TASK_UPLOAD;
+  task->state = TASK_RUNNING;
+  task->src_count = count;
+  task->file_count = count;
+  task->total = total;
+  snprintf(task->src, sizeof(task->src), "%s", src);
+  snprintf(task->dst, sizeof(task->dst), "%s", path);
+  snprintf(task->current, sizeof(task->current), "%s", src);
+  task->created_at = time(NULL);
+  task->updated_at = task->created_at;
+
+  pthread_mutex_lock(&g_tasks_lock);
+  remove_finished_tasks_locked();
+  if(has_active_task_locked()) {
+    pthread_mutex_unlock(&g_tasks_lock);
+    free_task(task);
+    free(path); free(src); free(total_text); free(count_text);
+    return send_json_error(conn, MHD_HTTP_CONFLICT, "another task is running");
+  }
+  task->id = g_next_task_id++;
+  task->next = g_tasks;
+  g_tasks = task;
+  pthread_mutex_unlock(&g_tasks_lock);
+
+  free(path); free(src); free(total_text); free(count_text);
+  strbuf_printf(&b, "{\"ok\":true,\"task_id\":%lu}", task->id);
+  return send_buffer(conn, MHD_HTTP_OK, b.data, "application/json");
+}
+
+static enum MHD_Result
+api_upload_finish(struct MHD_Connection *conn) {
+  file_task_t *task = upload_task_from_conn(conn);
+
+  if(!task) {
+    return send_json_error(conn, MHD_HTTP_NOT_FOUND, "active task not found");
+  }
+  if(task_cancel_requested(task)) {
+    finish_upload_task(task, TASK_CANCELED,
+                       task->current[0] ? task->current : task->src,
+                       "canceled");
+    return send_json_error(conn, MHD_HTTP_CONFLICT, "canceled");
+  }
+  finish_upload_task(task, TASK_DONE,
+                     task->current[0] ? task->current : task->src, NULL);
+  return send_json_ok(conn);
+}
+
+int
+filemgr_upload_begin(struct MHD_Connection *conn, void **upload_ctx) {
+  upload_context_t *ctx;
+  char *base = fs_path_value(request_value(conn, "X-WFM-Path", "path"));
+  char *rel = fs_path_value(request_value(conn, "X-WFM-Rel", "rel"));
+  char *overwrite = request_value(conn, "X-WFM-Overwrite", "overwrite");
+  char *size_text = request_value(conn, "X-WFM-Size", "size");
+  file_task_t *task = upload_task_from_conn(conn);
+  char **checked_dirs = NULL;
+  size_t checked_dir_count = 0;
+  struct stat st;
+  char error[128] = {0};
+  char code[64] = {0};
+  char arg[PATH_MAX + 96] = {0};
+  int n;
+
+  *upload_ctx = NULL;
+  if(!(ctx = calloc(1, sizeof(*ctx)))) {
+    free(base); free(rel); free(overwrite); free(size_text);
+    errno = ENOMEM;
+    return -1;
+  }
+  ctx->fd = -1;
+  *upload_ctx = ctx;
+
+  if(size_text) {
+    ctx->expected = strtoull(size_text, NULL, 10);
+  }
+  ctx->task = task;
+  if(task && task_cancel_requested(task)) {
+    ctx->failed = 1;
+    ctx->error = ECANCELED;
+    goto fail;
+  }
+  if(!task && has_active_task()) {
+    ctx->failed = 1;
+    ctx->error = EBUSY;
+    goto fail;
+  }
+  if(!base || !rel || path_join_relative(ctx->target, sizeof(ctx->target),
+                                         base, rel)) {
+    ctx->failed = 1;
+    ctx->error = errno ? errno : EINVAL;
+    goto fail;
+  }
+  if(ensure_parent_dirs(base, rel)) {
+    ctx->failed = 1;
+    ctx->error = errno ? errno : EACCES;
+    goto fail;
+  }
+  if(!lstat(ctx->target, &st)) {
+    if(S_ISDIR(st.st_mode) || !overwrite || strcmp(overwrite, "1")) {
+      ctx->failed = 1;
+      ctx->error = S_ISDIR(st.st_mode) ? EISDIR : EEXIST;
+      goto fail;
+    }
+  } else if(errno != ENOENT) {
+    ctx->failed = 1;
+    ctx->error = errno;
+    goto fail;
+  }
+  if(check_target_writable(ctx->target, &checked_dirs, &checked_dir_count,
+                           error, sizeof(error), code, sizeof(code),
+                           arg, sizeof(arg))) {
+    ctx->failed = 1;
+    ctx->error = errno ? errno : EACCES;
+    goto fail;
+  }
+  if(check_target_space(ctx->target, ctx->expected, error, sizeof(error),
+                        code, sizeof(code), arg, sizeof(arg))) {
+    ctx->failed = 1;
+    ctx->error = errno ? errno : ENOSPC;
+    goto fail;
+  }
+  n = snprintf(ctx->temp, sizeof(ctx->temp), "%s.wfm-upload-%ld-%lld.tmp",
+               ctx->target, (long)getpid(), (long long)time(NULL));
+  if(n < 0 || (size_t)n >= sizeof(ctx->temp)) {
+    ctx->failed = 1;
+    ctx->error = ENAMETOOLONG;
+    goto fail;
+  }
+  ctx->fd = open(ctx->temp, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+  if(ctx->fd < 0) {
+    ctx->failed = 1;
+    ctx->error = errno;
+    goto fail;
+  }
+
+fail:
+  free_paths(checked_dirs, checked_dir_count);
+  free(base); free(rel); free(overwrite); free(size_text);
+  if(ctx->failed) {
+    if(ctx->task) {
+      finish_upload_task(ctx->task,
+                         ctx->error == ECANCELED ? TASK_CANCELED : TASK_FAILED,
+                         ctx->target[0] ? ctx->target : ctx->task->current,
+                         ctx->error == ECANCELED ? "canceled" : strerror(ctx->error ? ctx->error : EIO));
+      ctx->task_done = 1;
+    }
+    if(ctx->fd >= 0) {
+      close(ctx->fd);
+      ctx->fd = -1;
+    }
+    if(ctx->temp[0]) {
+      unlink(ctx->temp);
+    }
+    errno = ctx->error ? ctx->error : EIO;
+    return -1;
+  }
+  return 0;
+}
+
+int
+filemgr_upload_data(void *upload_ctx, const char *data, size_t size) {
+  upload_context_t *ctx = upload_ctx;
+  size_t written = 0;
+
+  if(!ctx || ctx->failed) {
+    return -1;
+  }
+  if(ctx->task && task_cancel_requested(ctx->task)) {
+    ctx->failed = 1;
+    ctx->error = ECANCELED;
+    return -1;
+  }
+  while(written < size) {
+    ssize_t n = write(ctx->fd, data + written, size - written);
+    if(n <= 0) {
+      ctx->failed = 1;
+      ctx->error = errno ? errno : EIO;
+      return -1;
+    }
+    written += (size_t)n;
+    ctx->written += (unsigned long long)n;
+    if(ctx->task) {
+      task_update(ctx->task, TASK_RUNNING, ctx->target,
+                  (unsigned long long)n, NULL);
+    }
+  }
+  return 0;
+}
+
+enum MHD_Result
+filemgr_upload_finish(struct MHD_Connection *conn, void *upload_ctx) {
+  upload_context_t *ctx = upload_ctx;
+  int ret = -1;
+
+  if(!ctx) {
+    return send_json_error(conn, MHD_HTTP_BAD_REQUEST, "invalid path");
+  }
+  if(ctx->failed) {
+    if(ctx->task && !ctx->task_done) {
+      finish_upload_task(ctx->task,
+                         ctx->error == ECANCELED ? TASK_CANCELED : TASK_FAILED,
+                         ctx->target[0] ? ctx->target : ctx->task->current,
+                         ctx->error == ECANCELED ? "canceled" : strerror(ctx->error ? ctx->error : EIO));
+      ctx->task_done = 1;
+    }
+    errno = ctx->error ? ctx->error : EIO;
+    return send_json_error(conn, errno == EEXIST ? MHD_HTTP_CONFLICT :
+                           errno == EBUSY ? MHD_HTTP_CONFLICT :
+                           errno == ECANCELED ? MHD_HTTP_CONFLICT :
+                           errno == ENOSPC ? MHD_HTTP_INSUFFICIENT_STORAGE :
+                           MHD_HTTP_INTERNAL_SERVER_ERROR, NULL);
+  }
+  if(ctx->expected && ctx->written != ctx->expected) {
+    ctx->error = EIO;
+    goto done;
+  }
+  if(fchmod_0777(ctx->fd)) {
+    ctx->error = errno;
+    goto done;
+  }
+  if(fsync(ctx->fd)) {
+    ctx->error = errno;
+    goto done;
+  }
+  if(close(ctx->fd)) {
+    ctx->fd = -1;
+    ctx->error = errno;
+    goto done;
+  }
+  ctx->fd = -1;
+  if(rename(ctx->temp, ctx->target)) {
+    ctx->error = errno;
+    goto done;
+  }
+  ret = 0;
+
+done:
+  if(ctx->fd >= 0) {
+    close(ctx->fd);
+    ctx->fd = -1;
+  }
+  if(ret) {
+    if(ctx->temp[0]) {
+      unlink(ctx->temp);
+    }
+    if(ctx->task && !ctx->task_done) {
+      finish_upload_task(ctx->task,
+                         ctx->error == ECANCELED ? TASK_CANCELED : TASK_FAILED,
+                         ctx->target[0] ? ctx->target : ctx->task->current,
+                         ctx->error == ECANCELED ? "canceled" : strerror(ctx->error ? ctx->error : EIO));
+      ctx->task_done = 1;
+    }
+    errno = ctx->error ? ctx->error : EIO;
+    return send_json_error(conn, errno == ECANCELED ? MHD_HTTP_CONFLICT :
+                           MHD_HTTP_INTERNAL_SERVER_ERROR, NULL);
+  }
+  return send_json_ok(conn);
+}
+
+void
+filemgr_upload_free(void *upload_ctx) {
+  upload_context_t *ctx = upload_ctx;
+
+  if(!ctx) {
+    return;
+  }
+  if(ctx->fd >= 0) {
+    close(ctx->fd);
+    if(ctx->temp[0]) {
+      unlink(ctx->temp);
+    }
+    if(ctx->task && !ctx->task_done) {
+      int canceled = task_cancel_requested(ctx->task);
+      finish_upload_task(ctx->task, canceled ? TASK_CANCELED : TASK_FAILED,
+                         ctx->target[0] ? ctx->target : ctx->task->current,
+                         canceled ? "canceled" : "client disconnected");
+      ctx->task_done = 1;
+    }
+  }
+  free(ctx);
+}
+
 static unsigned long long
 vfs_bytes(fsblkcnt_t blocks, unsigned long block_size) {
   return (unsigned long long)blocks * (unsigned long long)block_size;
@@ -3172,6 +3712,10 @@ api_cancel(struct MHD_Connection *conn) {
   for(task = g_tasks; task; task = task->next) {
     if(task->id == id && task_is_active(task)) {
       task->cancel_requested = 1;
+      if(task->op == TASK_DOWNLOAD && task->state == TASK_QUEUED) {
+        task->state = TASK_CANCELED;
+        snprintf(task->error, sizeof(task->error), "canceled");
+      }
       task->updated_at = time(NULL);
       found = 1;
       break;
@@ -3266,6 +3810,695 @@ api_delete(struct MHD_Connection *conn, const char *body, size_t body_size) {
   }
   ret = create_task_response(conn, TASK_DELETE, paths, count, NULL, 0);
   free(paths_raw);
+  return ret;
+}
+
+static int
+tar_checksum(char *header) {
+  int sum = 0;
+  int i;
+
+  memset(header + 148, ' ', 8);
+  for(i = 0; i < 512; i++) {
+    sum += (unsigned char)header[i];
+  }
+  snprintf(header + 148, 8, "%06o", sum);
+  header[154] = 0;
+  header[155] = ' ';
+  return 0;
+}
+
+static int
+tar_split_name(const char *name, char *out_name, size_t out_name_size,
+               char *prefix, size_t prefix_size) {
+  size_t len = strlen(name);
+  const char *slash;
+
+  memset(out_name, 0, out_name_size);
+  memset(prefix, 0, prefix_size);
+  if(len < out_name_size) {
+    strcpy(out_name, name);
+    return 0;
+  }
+  for(slash = name + len; slash > name; slash--) {
+    size_t prefix_len;
+    size_t name_len;
+
+    if(*slash != '/') {
+      continue;
+    }
+    prefix_len = (size_t)(slash - name);
+    name_len = len - prefix_len - 1;
+    if(prefix_len < prefix_size && name_len > 0 && name_len < out_name_size) {
+      memcpy(prefix, name, prefix_len);
+      prefix[prefix_len] = 0;
+      memcpy(out_name, slash + 1, name_len + 1);
+      return 0;
+    }
+  }
+  errno = ENAMETOOLONG;
+  return -1;
+}
+
+static int
+tar_queue_header(tar_stream_t *s, const char *name, const struct stat *st,
+                 char type) {
+  char header[512];
+  char tar_name[100];
+  char prefix[155];
+  unsigned int mode = (unsigned int)(st->st_mode & 07777);
+  unsigned long long size = type == '0' ? (unsigned long long)st->st_size : 0;
+  long long mtime = (long long)st->st_mtime;
+
+  if(tar_split_name(name, tar_name, sizeof(tar_name), prefix, sizeof(prefix))) {
+    return -1;
+  }
+  memset(header, 0, sizeof(header));
+  memcpy(header, tar_name, strlen(tar_name));
+  snprintf(header + 100, 8, "%07o", mode);
+  snprintf(header + 108, 8, "%07o", 0);
+  snprintf(header + 116, 8, "%07o", 0);
+  snprintf(header + 124, 12, "%011llo", size);
+  snprintf(header + 136, 12, "%011llo", (unsigned long long)mtime);
+  header[156] = type;
+  memcpy(header + 257, "ustar", 5);
+  memcpy(header + 263, "00", 2);
+  if(prefix[0]) {
+    memcpy(header + 345, prefix, strlen(prefix));
+  }
+  tar_checksum(header);
+  s->pending = malloc(sizeof(header));
+  if(!s->pending) {
+    errno = ENOMEM;
+    return -1;
+  }
+  memcpy(s->pending, header, sizeof(header));
+  s->pending_size = sizeof(header);
+  s->pending_offset = 0;
+  return 0;
+}
+
+static int
+tar_push_dir(tar_stream_t *s, const char *path, const char *name) {
+  tar_frame_t *frame = calloc(1, sizeof(*frame));
+
+  if(!frame) {
+    errno = ENOMEM;
+    return -1;
+  }
+  snprintf(frame->path, sizeof(frame->path), "%s", path);
+  snprintf(frame->name, sizeof(frame->name), "%s", name);
+  frame->dir = opendir(path);
+  if(!frame->dir) {
+    int error = errno;
+    free(frame);
+    errno = error;
+    return -1;
+  }
+  frame->next = s->stack;
+  s->stack = frame;
+  s->stack_depth++;
+  return 0;
+}
+
+static void
+tar_pop_dir(tar_stream_t *s) {
+  tar_frame_t *frame = s->stack;
+
+  if(!frame) {
+    return;
+  }
+  s->stack = frame->next;
+  if(s->stack_depth) {
+    s->stack_depth--;
+  }
+  if(frame->dir) {
+    closedir(frame->dir);
+  }
+  free(frame);
+}
+
+static int
+tar_start_path(tar_stream_t *s, const char *path, const char *name) {
+  struct stat st;
+
+  if(lstat(path, &st)) {
+    return -1;
+  }
+  if(S_ISDIR(st.st_mode)) {
+    char dir_name[PATH_MAX];
+    snprintf(dir_name, sizeof(dir_name), "%s%s", name,
+             name[strlen(name) - 1] == '/' ? "" : "/");
+    return tar_push_dir(s, path, dir_name);
+  }
+  if(!S_ISREG(st.st_mode)) {
+    errno = ENOTSUP;
+    return -1;
+  }
+  if(tar_queue_header(s, name, &st, '0')) {
+    return -1;
+  }
+  s->fd = open(path, O_RDONLY);
+  if(s->fd < 0) {
+    return -1;
+  }
+  snprintf(s->current_file, sizeof(s->current_file), "%s", path);
+  s->file_remaining = (unsigned long long)st.st_size;
+  s->file_padding = (size_t)((512 - ((unsigned long long)st.st_size % 512)) % 512);
+  return 0;
+}
+
+static int
+tar_prepare_next(tar_stream_t *s) {
+  while(!s->pending && s->fd < 0 && !s->done) {
+    if(s->task && task_cancel_requested(s->task)) {
+      errno = ECANCELED;
+      return -1;
+    }
+    if(s->pad_remaining) {
+      size_t size = s->pad_remaining > 512 ? 512 : s->pad_remaining;
+      s->pending = calloc(1, size);
+      if(!s->pending) {
+        errno = ENOMEM;
+        return -1;
+      }
+      s->pending_size = size;
+      s->pending_offset = 0;
+      s->pad_remaining -= size;
+      return 0;
+    }
+    if(s->stack) {
+      tar_frame_t *frame = s->stack;
+      struct dirent *entry;
+      struct stat st;
+
+      if(!frame->header_sent) {
+        frame->header_sent = 1;
+        if(lstat(frame->path, &st) ||
+           tar_queue_header(s, frame->name, &st, '5')) {
+          return -1;
+        }
+        return 0;
+      }
+      while((entry = readdir(frame->dir))) {
+        char child[PATH_MAX];
+        char child_name[PATH_MAX];
+
+        if(!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+          continue;
+        }
+        if(path_join(child, sizeof(child), frame->path, entry->d_name) ||
+           path_join(child_name, sizeof(child_name), frame->name,
+                     entry->d_name) ||
+           tar_start_path(s, child, child_name)) {
+          return -1;
+        }
+        return 0;
+      }
+      tar_pop_dir(s);
+      continue;
+    }
+    if(s->path_index < s->path_count) {
+      const char *path = s->paths[s->path_index++];
+      if(tar_start_path(s, path, path_basename(path))) {
+        return -1;
+      }
+      continue;
+    }
+    if(s->final_blocks < 2) {
+      s->pending = calloc(1, 512);
+      if(!s->pending) {
+        errno = ENOMEM;
+        return -1;
+      }
+      s->pending_size = 512;
+      s->pending_offset = 0;
+      s->final_blocks++;
+      return 0;
+    }
+    s->done = 1;
+  }
+  return 0;
+}
+
+static ssize_t
+tar_read(void *cls, uint64_t pos, char *buf, size_t max) {
+  tar_stream_t *s = cls;
+  size_t out = 0;
+  (void)pos;
+
+  while(out < max && !s->done) {
+    if(s->task && task_cancel_requested(s->task)) {
+      s->error = ECANCELED;
+      return out ? (ssize_t)out : MHD_CONTENT_READER_END_WITH_ERROR;
+    }
+    if(tar_prepare_next(s)) {
+      s->error = errno ? errno : EIO;
+      return out ? (ssize_t)out : MHD_CONTENT_READER_END_WITH_ERROR;
+    }
+    if(s->pending) {
+      size_t left = s->pending_size - s->pending_offset;
+      size_t take = left < max - out ? left : max - out;
+      memcpy(buf + out, s->pending + s->pending_offset, take);
+      s->pending_offset += take;
+      out += take;
+      if(s->pending_offset >= s->pending_size) {
+        free(s->pending);
+        s->pending = NULL;
+        s->pending_size = 0;
+        s->pending_offset = 0;
+      }
+      continue;
+    }
+    if(s->fd >= 0) {
+      size_t want = max - out;
+      ssize_t n;
+      if((unsigned long long)want > s->file_remaining) {
+        want = (size_t)s->file_remaining;
+      }
+      n = read(s->fd, buf + out, want);
+      if(n < 0) {
+        s->error = errno;
+        return out ? (ssize_t)out : MHD_CONTENT_READER_END_WITH_ERROR;
+      }
+      if(!n) {
+        close(s->fd);
+        s->fd = -1;
+        s->current_file[0] = 0;
+        s->file_remaining = 0;
+        continue;
+      }
+      out += (size_t)n;
+      s->file_remaining -= (unsigned long long)n;
+      if(s->task) {
+        task_update(s->task, TASK_RUNNING,
+                    s->current_file[0] ? s->current_file : NULL,
+                    (unsigned long long)n, NULL);
+      }
+      if(!s->file_remaining) {
+        close(s->fd);
+        s->fd = -1;
+        s->current_file[0] = 0;
+        s->pad_remaining = s->file_padding;
+        s->file_padding = 0;
+      }
+    }
+  }
+  return out ? (ssize_t)out : MHD_CONTENT_READER_END_OF_STREAM;
+}
+
+static void
+tar_close(void *cls) {
+  tar_stream_t *s = cls;
+  int canceled;
+
+  if(!s) {
+    return;
+  }
+  if(s->fd >= 0) {
+    close(s->fd);
+  }
+  while(s->stack) {
+    tar_pop_dir(s);
+  }
+  canceled = s->task && task_cancel_requested(s->task);
+  if(s->task) {
+    char current[PATH_MAX];
+    snprintf(current, sizeof(current), "%s",
+             s->task->current[0] ? s->task->current : s->task->src);
+    if(canceled) {
+      task_update(s->task, TASK_CANCELED, current, 0, "canceled");
+    } else if(s->error) {
+      errno = s->error;
+      task_update(s->task, TASK_FAILED, current, 0, strerror(errno));
+    } else if(s->done) {
+      task_update(s->task, TASK_DONE, current, 0, NULL);
+    } else {
+      task_update(s->task, TASK_FAILED, current, 0, "client disconnected");
+    }
+  }
+  free(s->pending);
+  free_paths(s->paths, s->path_count);
+  free(s);
+}
+
+static int
+prepare_download_task(file_task_t *task) {
+  unsigned long long total = 0;
+  size_t file_count = 0;
+  size_t dir_count = 0;
+  size_t i;
+
+  task_update(task, TASK_RUNNING, "preparing", 0, NULL);
+  for(i = 0; i < task->src_count; i++) {
+    if(count_path_bytes(task, task->srcs[i], task->srcs[i], NULL,
+                        &total, NULL, &file_count, &dir_count)) {
+      return -1;
+    }
+  }
+  pthread_mutex_lock(&g_tasks_lock);
+  task->total = total;
+  task->file_count = file_count;
+  task->dir_count = dir_count;
+  task->updated_at = time(NULL);
+  pthread_mutex_unlock(&g_tasks_lock);
+  return 0;
+}
+
+static size_t
+append_truncated_name(char *out, size_t size, size_t len, const char *name,
+                      size_t limit) {
+  while(*name && len < limit && len + 1 < size) {
+    unsigned char c = (unsigned char)*name;
+    out[len++] = *name++;
+    if(c >= 0x80) {
+      while((*name & 0xc0) == 0x80 && len < limit && len + 1 < size) {
+        out[len++] = *name++;
+      }
+    }
+  }
+  out[len] = 0;
+  return len;
+}
+
+static void
+download_archive_name(char *out, size_t size, char **paths, size_t count) {
+  char name[PATH_MAX];
+  size_t len = 0;
+  size_t i;
+
+  out[0] = 0;
+  if(count == 1) {
+    path_basename_copy(paths[0], name, sizeof(name));
+    append_truncated_name(out, size, 0, name, DOWNLOAD_ARCHIVE_NAME_LIMIT);
+  } else {
+    for(i = 0; i < count && len < DOWNLOAD_ARCHIVE_NAME_LIMIT; i++) {
+      path_basename_copy(paths[i], name, sizeof(name));
+      if(i && len + 1 < DOWNLOAD_ARCHIVE_NAME_LIMIT && len + 1 < size) {
+        out[len++] = ' ';
+        out[len] = 0;
+      }
+      len = append_truncated_name(out, size, len, name,
+                                  DOWNLOAD_ARCHIVE_NAME_LIMIT);
+    }
+  }
+  if(!out[0]) {
+    snprintf(out, size, "download");
+  }
+  snprintf(out + strlen(out), size - strlen(out), ".tar");
+}
+
+static void
+download_file_name(char *out, size_t size, const char *path) {
+  path_basename_copy(path, out, size);
+  if(!out[0]) {
+    snprintf(out, size, "download");
+  }
+}
+
+static size_t
+header_quoted_filename(char *out, size_t size, const char *name) {
+  size_t len = 0;
+
+  while(*name && len + 1 < size) {
+    unsigned char c = (unsigned char)*name++;
+    if(c < 0x20 || c == 0x7f || c == '"' || c == '\\') {
+      c = '_';
+    }
+    out[len++] = (char)c;
+  }
+  out[len] = 0;
+  return len;
+}
+
+static size_t
+header_percent_filename(char *out, size_t size, const char *name) {
+  static const char hex[] = "0123456789ABCDEF";
+  size_t len = 0;
+
+  while(*name && len + 1 < size) {
+    unsigned char c = (unsigned char)*name++;
+    int safe = (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') ||
+               (c >= 'a' && c <= 'z') || c == '.' || c == '_' || c == '-';
+    if(safe) {
+      out[len++] = (char)c;
+    } else {
+      if(len + 3 >= size) {
+        break;
+      }
+      out[len++] = '%';
+      out[len++] = hex[c >> 4];
+      out[len++] = hex[c & 15];
+    }
+  }
+  out[len] = 0;
+  return len;
+}
+
+static void
+add_download_filename_header(struct MHD_Response *resp, const char *name) {
+  char quoted[PATH_MAX];
+  char encoded[PATH_MAX * 3];
+  char header[PATH_MAX * 4];
+
+  header_quoted_filename(quoted, sizeof(quoted), name);
+  header_percent_filename(encoded, sizeof(encoded), name);
+  snprintf(header, sizeof(header),
+           "attachment; filename=\"%s\"; filename*=UTF-8''%s",
+           quoted, encoded);
+  MHD_add_response_header(resp, "Content-Disposition", header);
+}
+
+static enum MHD_Result
+create_download_task_response(struct MHD_Connection *conn, char **paths,
+                              size_t count) {
+  file_task_t *task = calloc(1, sizeof(file_task_t));
+  strbuf_t b = {0};
+  struct stat st;
+  size_t i;
+
+  if(!task) {
+    free_paths(paths, count);
+    return send_json_error(conn, MHD_HTTP_INTERNAL_SERVER_ERROR, "out of memory");
+  }
+  if(!count) {
+    return task_request_error(conn, task, paths, count,
+                              MHD_HTTP_BAD_REQUEST, "no source paths");
+  }
+  for(i = 0; i < count; i++) {
+    if(lstat(paths[i], &st)) {
+      return task_request_error(conn, task, paths, count,
+                                MHD_HTTP_NOT_FOUND, "file not found");
+    }
+    if(!S_ISREG(st.st_mode) && !S_ISDIR(st.st_mode)) {
+      return task_request_error(conn, task, paths, count,
+                                MHD_HTTP_BAD_REQUEST, "invalid path");
+    }
+  }
+  task->op = TASK_DOWNLOAD;
+  task->state = TASK_QUEUED;
+  task->srcs = paths;
+  task->src_count = count;
+  snprintf(task->src, sizeof(task->src), "%s%s", paths[0],
+           count > 1 ? " ..." : "");
+  snprintf(task->current, sizeof(task->current), "%s", task->src);
+  task->created_at = time(NULL);
+  task->updated_at = task->created_at;
+
+  pthread_mutex_lock(&g_tasks_lock);
+  remove_finished_tasks_locked();
+  if(has_active_task_locked()) {
+    pthread_mutex_unlock(&g_tasks_lock);
+    return task_request_error(conn, task, paths, count,
+                              MHD_HTTP_CONFLICT, "another task is running");
+  }
+  task->id = g_next_task_id++;
+  task->next = g_tasks;
+  g_tasks = task;
+  pthread_mutex_unlock(&g_tasks_lock);
+
+  strbuf_printf(&b, "{\"ok\":true,\"task_id\":%lu}", task->id);
+  return send_buffer(conn, MHD_HTTP_OK, b.data, "application/json");
+}
+
+static enum MHD_Result
+api_download_prepare(struct MHD_Connection *conn, const char *body,
+                     size_t body_size) {
+  char *paths_raw = body_form_value(body, body_size, "paths");
+  char **paths = NULL;
+  size_t count = 0;
+
+  if(!paths_raw || parse_paths(paths_raw, &paths, &count)) {
+    free(paths_raw);
+    return send_json_error(conn, MHD_HTTP_BAD_REQUEST, "invalid path");
+  }
+  free(paths_raw);
+  return create_download_task_response(conn, paths, count);
+}
+
+static ssize_t
+download_file_read(void *cls, uint64_t pos, char *buf, size_t max) {
+  download_file_stream_t *s = cls;
+  size_t len;
+  (void)pos;
+
+  if(task_cancel_requested(s->task)) {
+    s->error = ECANCELED;
+    return MHD_CONTENT_READER_END_WITH_ERROR;
+  }
+  if(fseek(s->file, (long)pos, SEEK_SET)) {
+    s->error = errno ? errno : EIO;
+    return MHD_CONTENT_READER_END_WITH_ERROR;
+  }
+  if(!(len = fread(buf, 1, max, s->file))) {
+    if(ferror(s->file)) {
+      s->error = errno ? errno : EIO;
+      return MHD_CONTENT_READER_END_WITH_ERROR;
+    }
+    s->done = 1;
+    return MHD_CONTENT_READER_END_OF_STREAM;
+  }
+  {
+    unsigned long long end = (unsigned long long)pos + (unsigned long long)len;
+    unsigned long long add = end > s->sent ? end - s->sent : 0;
+    if(end > s->sent) {
+      s->sent = end;
+    }
+    if(s->sent >= s->size) {
+      s->done = 1;
+    }
+    task_update(s->task, TASK_RUNNING, s->task->src, add, NULL);
+  }
+  return (ssize_t)len;
+}
+
+static void
+download_file_close(void *cls) {
+  download_file_stream_t *s = cls;
+  int canceled;
+
+  if(!s) {
+    return;
+  }
+  if(s->file) {
+    fclose(s->file);
+  }
+  canceled = task_cancel_requested(s->task);
+  if(canceled) {
+    task_update(s->task, TASK_CANCELED, s->task->src, 0, "canceled");
+  } else if(s->error) {
+    errno = s->error;
+    task_update(s->task, TASK_FAILED, s->task->src, 0, strerror(errno));
+  } else if(s->done) {
+    task_update(s->task, TASK_DONE, s->task->src, 0, NULL);
+  } else {
+    task_update(s->task, TASK_FAILED, s->task->src, 0, "client disconnected");
+  }
+  free(s);
+}
+
+static enum MHD_Result
+api_download(struct MHD_Connection *conn) {
+  char *idstr = query_value(conn, "id");
+  unsigned long id = idstr ? strtoul(idstr, NULL, 10) : 0;
+  char **paths = NULL;
+  size_t count = 0;
+  struct stat st;
+  tar_stream_t *stream;
+  struct MHD_Response *resp;
+  enum MHD_Result ret;
+  file_task_t *task;
+  char download_name[PATH_MAX];
+
+  free(idstr);
+  pthread_mutex_lock(&g_tasks_lock);
+  task = find_task_locked(id);
+  if(!task || task->op != TASK_DOWNLOAD || task->state != TASK_QUEUED) {
+    pthread_mutex_unlock(&g_tasks_lock);
+    return send_json_error(conn, MHD_HTTP_NOT_FOUND, "active task not found");
+  }
+  task->state = TASK_RUNNING;
+  task->updated_at = time(NULL);
+  pthread_mutex_unlock(&g_tasks_lock);
+
+  if(prepare_download_task(task)) {
+    char current[PATH_MAX];
+    snprintf(current, sizeof(current), "%s",
+             task->current[0] ? task->current : task->src);
+    if(errno == ECANCELED || task_cancel_requested(task)) {
+      task_update(task, TASK_CANCELED, current, 0, "canceled");
+    } else {
+      task_update(task, TASK_FAILED, current, 0, strerror(errno));
+    }
+    return send_json_error(conn, MHD_HTTP_INTERNAL_SERVER_ERROR, NULL);
+  }
+
+  paths = task->srcs;
+  count = task->src_count;
+  if(count == 1 && !stat(paths[0], &st) && S_ISREG(st.st_mode)) {
+    download_file_stream_t *file_stream = calloc(1, sizeof(*file_stream));
+    if(!file_stream) {
+      task_update(task, TASK_FAILED, task->src, 0, "out of memory");
+      return send_json_error(conn, MHD_HTTP_INTERNAL_SERVER_ERROR, "out of memory");
+    }
+    file_stream->task = task;
+    file_stream->size = (unsigned long long)st.st_size;
+    file_stream->file = fopen(paths[0], "rb");
+    if(!file_stream->file) {
+      free(file_stream);
+      task_update(task, TASK_FAILED, task->src, 0, strerror(errno));
+      return send_json_error(conn, MHD_HTTP_NOT_FOUND, "file not found");
+    }
+    resp = MHD_create_response_from_callback((uint64_t)st.st_size, 32 * 0x4000,
+                                             download_file_read, file_stream,
+                                             download_file_close);
+    if(!resp) {
+      download_file_close(file_stream);
+      return MHD_NO;
+    }
+    MHD_add_response_header(resp, MHD_HTTP_HEADER_CONTENT_TYPE,
+                            "application/octet-stream");
+    download_file_name(download_name, sizeof(download_name), paths[0]);
+    add_download_filename_header(resp, download_name);
+    ret = websrv_queue_response(conn, MHD_HTTP_OK, resp);
+    MHD_destroy_response(resp);
+    return ret;
+  }
+  if(!(stream = calloc(1, sizeof(*stream)))) {
+    task_update(task, TASK_FAILED, task->src, 0, "out of memory");
+    return send_json_error(conn, MHD_HTTP_INTERNAL_SERVER_ERROR, "out of memory");
+  }
+  stream->fd = -1;
+  stream->task = task;
+  stream->paths = NULL;
+  stream->path_count = count;
+  stream->paths = calloc(count, sizeof(char *));
+  if(!stream->paths) {
+    tar_close(stream);
+    task_update(task, TASK_FAILED, task->src, 0, "out of memory");
+    return send_json_error(conn, MHD_HTTP_INTERNAL_SERVER_ERROR, "out of memory");
+  }
+  for(size_t i = 0; i < count; i++) {
+    stream->paths[i] = strdup(paths[i]);
+    if(!stream->paths[i]) {
+      stream->path_count = i;
+      tar_close(stream);
+      task_update(task, TASK_FAILED, task->src, 0, "out of memory");
+      return send_json_error(conn, MHD_HTTP_INTERNAL_SERVER_ERROR, "out of memory");
+    }
+  }
+  resp = MHD_create_response_from_callback(MHD_SIZE_UNKNOWN, 32 * 0x4000,
+                                           tar_read, stream, tar_close);
+  if(!resp) {
+    tar_close(stream);
+    return MHD_NO;
+  }
+  MHD_add_response_header(resp, MHD_HTTP_HEADER_CONTENT_TYPE,
+                          "application/x-tar");
+  download_archive_name(download_name, sizeof(download_name), paths, count);
+  add_download_filename_header(resp, download_name);
+  ret = websrv_queue_response(conn, MHD_HTTP_OK, resp);
+  MHD_destroy_response(resp);
   return ret;
 }
 
@@ -3537,6 +4770,14 @@ filemgr_api_request(struct MHD_Connection *conn, const char *url,
   if(!strcmp(url, "/api/copy")) return api_copy(conn, body, body_size);
   if(!strcmp(url, "/api/move")) return api_move(conn, body, body_size);
   if(!strcmp(url, "/api/delete")) return api_delete(conn, body, body_size);
+  if(!strcmp(url, "/api/download/prepare")) return api_download_prepare(conn, body, body_size);
+  if(!strcmp(url, "/api/download")) {
+    return strcmp(method, MHD_HTTP_METHOD_GET) ?
+      send_json_error(conn, MHD_HTTP_METHOD_NOT_ALLOWED, "invalid method") :
+      api_download(conn);
+  }
+  if(!strcmp(url, "/api/upload/prepare")) return api_upload_prepare(conn, body, body_size);
+  if(!strcmp(url, "/api/upload/finish")) return api_upload_finish(conn);
   if(!strcmp(url, "/api/rename")) return api_rename(conn);
   if(!strcmp(url, "/api/mkdir")) return api_mkdir(conn);
   if(!strcmp(url, "/api/text")) {
