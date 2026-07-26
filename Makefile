@@ -23,30 +23,25 @@ HOST_STRIP  ?= strip
 HOST_PKG_CONFIG ?= pkg-config
 
 BIN        := web-file-mgr.elf
-LEGACY_BIN := web-file-mgr-legacy.elf
 LINUX_BIN  := web-file-mgr-linux
-COMMON_SRCS := src/main.c src/websrv.c src/filemgr.c src/asset.c src/mime.c src/notify.c
+COMMON_SRCS := src/main.c src/websrv.c src/filemgr.c src/file_response.c src/task.c src/upload.c src/download.c src/text.c src/list.c src/space.c src/fs_util.c src/json_util.c src/path_util.c src/asset.c src/mime.c src/notify.c
 PS5_SRCS    := $(COMMON_SRCS) src/app_installer.c
 LINUX_SRCS  := $(COMMON_SRCS)
 ASSETS      := $(wildcard assets/*)
 GEN_SRCS    := $(patsubst assets/%,gen/%, $(ASSETS:=.c))
 
-CFLAGS := -Oz -fno-asynchronous-unwind-tables -fno-unwind-tables -Wall -Werror -ffunction-sections -fdata-sections -Isrc -DVERSION_TAG=\"$(VERSION_TAG)\" -DTITLE_ID=\"$(TITLE_ID)\"
+CFLAGS := -Oz -flto -fno-asynchronous-unwind-tables -fno-unwind-tables -Wall -Werror -ffunction-sections -fdata-sections -Isrc -DVERSION_TAG=\"$(VERSION_TAG)\" -DTITLE_ID=\"$(TITLE_ID)\"
 CFLAGS += `$(PKG_CONFIG) libmicrohttpd --cflags`
 LDFLAGS := -Wl,--gc-sections
-LEGACY_CFLAGS := $(filter-out -ffunction-sections -fdata-sections,$(CFLAGS))
-LEGACY_LDFLAGS :=
 LDADD  := `$(PKG_CONFIG) libmicrohttpd --libs`
 LDADD  += -lSceIpmi -lSceAppInstUtil
-LINUX_CFLAGS := -O2 -Wall -Werror -Isrc -DVERSION_TAG=\"$(VERSION_TAG)\" -DTITLE_ID=\"$(TITLE_ID)\"
+LINUX_CFLAGS := -O2 -flto -Wall -Werror -Isrc -DVERSION_TAG=\"$(VERSION_TAG)\" -DTITLE_ID=\"$(TITLE_ID)\"
 LINUX_CFLAGS += `$(HOST_PKG_CONFIG) libmicrohttpd --cflags`
 LINUX_LDADD := `$(HOST_PKG_CONFIG) libmicrohttpd --libs` -pthread
 
-.PHONY: all legacy linux deps linux-deps clean
+.PHONY: all linux deps linux-deps clean
 
 all: deps $(BIN)
-
-legacy: deps $(LEGACY_BIN)
 
 linux: linux-deps $(LINUX_BIN)
 
@@ -61,17 +56,13 @@ gen:
 	mkdir gen
 
 clean:
-	rm -rf $(BIN) $(LEGACY_BIN) $(LINUX_BIN) gen
+	rm -rf $(BIN) $(LINUX_BIN) gen
 
 gen/%.c: assets/% gen-asset-module.py | gen
 	$(PYTHON) gen-asset-module.py --path $* $< > $@
 
 $(BIN): $(PS5_SRCS) $(GEN_SRCS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDADD)
-	$(STRIP) $@
-
-$(LEGACY_BIN): $(PS5_SRCS) $(GEN_SRCS)
-	$(CC) $(LEGACY_CFLAGS) $(LEGACY_LDFLAGS) -o $@ $^ $(LDADD)
 	$(STRIP) $@
 
 $(LINUX_BIN): $(LINUX_SRCS) $(GEN_SRCS)

@@ -214,30 +214,52 @@ async function apiForm(path, params, options) {
 
 function decodeFsText(text) {
   text = String(text || "");
-  let needsDecode = false;
+  if (typeof TextDecoder === "undefined" || typeof Uint8Array === "undefined") return text;
+
+  let out = "";
+  let bytes = [];
+  let raw = "";
+  let changed = false;
+
+  function flushBytes() {
+    if (!bytes.length) return;
+    const decoded = decodeFsBytes(bytes, raw);
+    if (decoded !== raw) changed = true;
+    out += decoded;
+    bytes = [];
+    raw = "";
+  }
+
   for (let i = 0; i < text.length; i++) {
     const code = text.charCodeAt(i);
-    if (code > 0xff) return text;
-    if (code >= 0x80) needsDecode = true;
+    if (code >= 0x80 && code <= 0xff) {
+      bytes.push(code & 0xff);
+      raw += text.charAt(i);
+      continue;
+    }
+    flushBytes();
+    out += text.charAt(i);
   }
-  if (!needsDecode || typeof TextDecoder === "undefined" || typeof Uint8Array === "undefined") return text;
+  flushBytes();
+  return changed ? out : text;
+}
 
-  const bytes = new Uint8Array(text.length);
-  for (let i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i) & 0xff;
-  if (isUtf8Bytes(bytes)) {
+function decodeFsBytes(bytes, fallback) {
+  const data = new Uint8Array(bytes);
+  if (isUtf8Bytes(data)) {
     try {
-      return new TextDecoder("utf-8").decode(bytes);
+      return new TextDecoder("utf-8").decode(data);
     } catch (err) {
-      return text;
+      return fallback;
     }
   }
   try {
-    return new TextDecoder("gbk").decode(bytes);
+    return new TextDecoder("gbk").decode(data);
   } catch (err) {
     try {
-      return new TextDecoder("gb18030").decode(bytes);
+      return new TextDecoder("gb18030").decode(data);
     } catch (err2) {
-      return text;
+      return fallback;
     }
   }
 }
@@ -542,7 +564,7 @@ function typeLabel(type) {
 
 function isEditableText(item) {
   return item.type === "-" &&
-    /\.(txt|json|xml|ini|cfg|conf|md|log|lua|js|css|html?|c|h|cpp|hpp|sh|csv|ya?ml)$/i.test(item.name);
+    /\.(txt|json|xml|ini|cfg|conf|md|log|lua|js|css|html?|c|h|cpp|hpp|sh|csv|ya?ml|shn)$/i.test(item.name);
 }
 
 function isPreviewableImage(item) {
@@ -694,6 +716,13 @@ function clipboardTitle() {
 function itemTitle(items) {
   if (!items.length) return "";
   return items.length === 1 ? displayName(items[0]) : t("selectedItems", { name: displayName(items[0]), count: items.length });
+}
+
+function itemListTitle(items, limit) {
+  if (!items.length) return "";
+  if (items.length === 1) return displayName(items[0]);
+  const shown = items.slice(0, limit).map(displayName).join(", ");
+  return items.length > limit ? t("selectedItems", { name: shown, count: items.length }) : shown;
 }
 
 function compareText(a, b) {
@@ -908,8 +937,13 @@ function togglePath(path, checked) {
   updateButtons();
 }
 
-function clearSelection() {
+function clearSelection(updateVisibleRows) {
   if (selected.size === 0) {
+    updateButtons();
+    return;
+  }
+  if (updateVisibleRows === false) {
+    selected.clear();
     updateButtons();
     return;
   }
@@ -1055,7 +1089,7 @@ async function runAction(label, fn, options) {
     const data = await fn();
     setStatus(t("taskCreated", { label }));
     trackTask(data.task_id, "delete", false, options && options.clearClipboardOnDone);
-    clearSelection();
+    clearSelection(false);
     await pollTasks();
   } catch (err) {
     setBusy(false);
@@ -1176,7 +1210,7 @@ function renderPendingOverlay(text, label) {
 
   const current = document.createElement("div");
   current.className = "task-current";
-  current.textContent = text;
+  current.textContent = displayPath(text);
 
   const progress = document.createElement("div");
   progress.className = "progress";
@@ -1271,7 +1305,7 @@ async function actionPaste() {
     pendingOverlayLabel = "";
     setStatus(t("taskCreated", { label }));
     trackTask(data.task_id, op, true);
-    clearSelection();
+    clearSelection(false);
     await pollTasks();
   } catch (err) {
     const aborted = err && err.name === "AbortError";
@@ -1403,7 +1437,7 @@ async function pollTasks() {
     }
     const wasBusy = busy;
     renderTasks(tasks);
-    if (wasBusy && !busy) startContentLoadingTimer();
+    const becameIdle = wasBusy && !busy;
     let shouldRefresh = false;
     let sawTrackedTask = false;
     for (const task of tasks) {
@@ -1418,14 +1452,16 @@ async function pollTasks() {
         handleTerminalTask(task);
       }
     }
-    if (trackedTask && wasBusy && !busy && !sawTrackedTask) {
+    if (trackedTask && becameIdle && !sawTrackedTask) {
       if ((trackedTask.fromClipboard || trackedTask.clearClipboardOnDone) &&
           !trackedTask.cancelRequested) clearClipboardAfterPaste();
       shouldRefresh = true;
       clearTrackedTask();
     }
+    if (becameIdle && !tasks.length) shouldRefresh = true;
     if (shouldRefresh) {
-      clearSelection();
+      if (becameIdle) startContentLoadingTimer();
+      clearSelection(false);
       await load(taskRefreshPath || cwd, false);
       await refreshSpaces();
     }
@@ -1456,7 +1492,7 @@ function actionDelete() {
   if (busy || loadingPath || selected.size === 0) return;
   const items = selectedEntries();
   const paths = items.map(item => item.path);
-  const target = itemTitle(items);
+  const target = itemListTitle(items, 4);
   const confirmKey = items.some(item => item.type === "d") ?
     "deleteConfirmRecursive" : "deleteConfirm";
   if (!confirm(t(confirmKey, { name: target }))) return;
@@ -1494,12 +1530,11 @@ function uploadRelativeName(file) {
   return file.webkitRelativePath || file.name;
 }
 
-function uploadConflicts(files) {
+function uploadConflicts(rels) {
   const names = {};
   const conflicts = [];
   for (const item of entries) names[item.name] = true;
-  for (const file of files) {
-    const rel = uploadRelativeName(file);
+  for (const rel of rels) {
     const top = rel.split("/")[0];
     if (names[top] && conflicts.indexOf(top) < 0) conflicts.push(top);
   }
@@ -1546,13 +1581,34 @@ function uploadFileRequest(taskId, file, rel, overwrite) {
 
 async function uploadFiles(files) {
   if (busy || loadingPath || !files.length) return;
-  const list = Array.prototype.slice.call(files);
-  const conflicts = uploadConflicts(list);
+  const useLoading = files.length >= SELECT_ALL_LOADING_THRESHOLD;
+  let list;
+  let rels = [];
+  let sizes = [];
+  let total = 0;
+  let conflicts = [];
+
+  if (useLoading) {
+    showContentLoading(t("processing"));
+    await nextPaint();
+  }
+  try {
+    list = Array.prototype.slice.call(files);
+    for (let i = 0; i < list.length; i++) {
+      const file = list[i];
+      rels.push(uploadRelativeName(file));
+      sizes.push(String(file.size || 0));
+      total += Number(file.size || 0);
+    }
+    conflicts = uploadConflicts(rels);
+  } finally {
+    if (useLoading) hideContentLoading();
+  }
+
   const overwrite = conflicts.length &&
     confirm(t("uploadOverwriteConfirm", { names: conflictText(conflicts) }));
   if (conflicts.length && !overwrite) return;
 
-  const total = list.reduce((sum, file) => sum + Number(file.size || 0), 0);
   let taskId = 0;
 
   try {
@@ -1560,16 +1616,19 @@ async function uploadFiles(files) {
     taskRefreshPath = cwd;
     const task = await apiForm("/api/upload/prepare", {
       path: cwd,
-      src: uploadRelativeName(list[0]),
+      src: rels[0],
       total,
-      count: list.length
+      count: list.length,
+      rels: rels.join("\n"),
+      sizes: sizes.join("\n"),
+      overwrite: overwrite ? "1" : "0"
     });
     taskId = task.task_id;
     trackTask(taskId, "upload", false);
     await pollTasks();
     for (let i = 0; i < list.length; i++) {
       const file = list[i];
-      const rel = uploadRelativeName(file);
+      const rel = rels[i];
       setStatus(t("uploadingStatus", { index: i + 1, count: list.length, name: rel }));
       await uploadFileRequest(taskId, file, rel, overwrite);
     }
