@@ -8,6 +8,8 @@
 
 #include <ps5/kernel.h>
 
+#include "asset.h"
+
 #define INCASSET(name, file)                    \
   __asm__(".section .rodata\n"                  \
           ".global " #name "\n"                 \
@@ -89,6 +91,8 @@ app_install_if_needed(void) {
   struct stat st;
   int update_needed = 0;
   int err;
+
+  asset_register("/icon0.png", icon0_png, icon0_png_size, "image/png", 0);
 
   snprintf(base_dir, sizeof(base_dir), "/user/app/%s", title_id);
   snprintf(sce_sys_dir, sizeof(sce_sys_dir), "/user/app/%s/sce_sys", title_id);

@@ -129,6 +129,9 @@ websrv_on_request(void *cls, struct MHD_Connection *conn, const char *url,
   if(!strcmp(url, "/") || !url[0]) {
     return asset_request(conn, "/index.html");
   }
+  if(!strcmp(url, "/favicon.ico")) {
+    return asset_request(conn, "/icon0.png");
+  }
   return asset_request(conn, url);
 }
 

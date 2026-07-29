@@ -27,10 +27,15 @@ LINUX_BIN  := web-file-mgr-linux
 COMMON_SRCS := src/main.c src/websrv.c src/filemgr.c src/file_response.c src/task.c src/upload.c src/download.c src/text.c src/list.c src/space.c src/fs_util.c src/json_util.c src/path_util.c src/asset.c src/mime.c src/notify.c
 PS5_SRCS    := $(COMMON_SRCS) src/app_installer.c
 LINUX_SRCS  := $(COMMON_SRCS)
-ASSETS      := $(wildcard assets/*)
+BASE_ASSETS := $(filter-out %.dds,$(wildcard assets/*))
+ifneq ($(filter linux,$(MAKECMDGOALS)),)
+ASSETS      := $(BASE_ASSETS)
+else
+ASSETS      := $(filter-out assets/icon0.png,$(BASE_ASSETS))
+endif
 GEN_SRCS    := $(patsubst assets/%,gen/%, $(ASSETS:=.c))
 
-CFLAGS := -Oz -flto -fno-asynchronous-unwind-tables -fno-unwind-tables -Wall -Werror -ffunction-sections -fdata-sections -Isrc -DVERSION_TAG=\"$(VERSION_TAG)\" -DTITLE_ID=\"$(TITLE_ID)\"
+CFLAGS := -Oz -fno-asynchronous-unwind-tables -fno-unwind-tables -Wall -Werror -ffunction-sections -fdata-sections -Isrc -DVERSION_TAG=\"$(VERSION_TAG)\" -DTITLE_ID=\"$(TITLE_ID)\"
 CFLAGS += `$(PKG_CONFIG) libmicrohttpd --cflags`
 LDFLAGS := -Wl,--gc-sections
 LDADD  := `$(PKG_CONFIG) libmicrohttpd --libs`
@@ -62,7 +67,7 @@ gen/%.c: assets/% gen-asset-module.py | gen
 	$(PYTHON) gen-asset-module.py --path $* $< > $@
 
 $(BIN): $(PS5_SRCS) $(GEN_SRCS)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDADD)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c,$^) $(LDADD)
 	$(STRIP) $@
 
 $(LINUX_BIN): $(LINUX_SRCS) $(GEN_SRCS)
