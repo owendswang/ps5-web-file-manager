@@ -1398,9 +1398,6 @@ remove_path(file_task_t *task, const char *path) {
     closedir(dir);
     return rmdir(path);
   }
-  if(S_ISREG(st.st_mode)) {
-    task_update(task, TASK_RUNNING, path, (unsigned long long)st.st_size, NULL);
-  }
   return unlink(path);
 }
 
