@@ -401,8 +401,8 @@ prepare_download_task(file_task_t *task) {
 
   task_update(task, TASK_RUNNING, "preparing", 0, NULL);
   for(i = 0; i < task->src_count; i++) {
-    if(count_task_path_bytes(task, task->srcs[i], task->srcs[i], NULL,
-                             &total, NULL, &file_count, &dir_count)) {
+    if(count_task_path_bytes(task, task->srcs[i], task->srcs[i],
+                             &total, &file_count, &dir_count)) {
       return -1;
     }
   }

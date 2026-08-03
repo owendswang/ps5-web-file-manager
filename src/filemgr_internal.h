@@ -103,9 +103,7 @@ int check_target_space(const char *target, unsigned long long required,
                        char *arg, size_t arg_size);
 int target_available_space(const char *target, unsigned long long *available);
 int count_task_path_bytes(file_task_t *task, const char *path,
-                          const char *display, const char *target,
-                          unsigned long long *total,
-                          unsigned long long *reclaimable,
+                          const char *display, unsigned long long *total,
                           size_t *file_count, size_t *dir_count);
 
 enum MHD_Result api_upload_prepare(struct MHD_Connection *conn,

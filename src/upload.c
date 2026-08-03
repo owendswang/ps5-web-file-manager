@@ -74,8 +74,7 @@ upload_task_from_conn(struct MHD_Connection *conn) {
 
 static int
 check_upload_manifest_space(const char *base, const char *rels,
-                            const char *sizes, int overwrite,
-                            unsigned long long fallback_total,
+                            const char *sizes, unsigned long long fallback_total,
                             char *error, size_t error_size,
                             char *code, size_t code_size,
                             char *arg, size_t arg_size) {
@@ -107,9 +106,7 @@ check_upload_manifest_space(const char *base, const char *rels,
   size_text = strtok_r(sizes_copy, "\n", &size_save);
   while(rel || size_text) {
     char target[PATH_MAX];
-    struct stat st;
     unsigned long long size;
-    unsigned long long reclaim = 0;
 
     if(!rel || !size_text || path_join_relative(target, sizeof(target), base, rel)) {
       snprintf(error, error_size, "invalid path");
@@ -130,10 +127,7 @@ check_upload_manifest_space(const char *base, const char *rels,
       goto done;
     }
 
-    if(overwrite && !lstat(target, &st) && S_ISREG(st.st_mode) && st.st_size > 0) {
-      reclaim = (unsigned long long)st.st_size;
-    }
-    available = available - size + reclaim;
+    available -= size;
 
     rel = strtok_r(NULL, "\n", &rel_save);
     size_text = strtok_r(NULL, "\n", &size_save);
@@ -188,9 +182,7 @@ api_upload_prepare(struct MHD_Connection *conn, const char *body,
   }
   pthread_mutex_unlock(&g_tasks_lock);
 
-  if(check_upload_manifest_space(path, rels, sizes,
-                                 overwrite && !strcmp(overwrite, "1"),
-                                 total, error, sizeof(error),
+  if(check_upload_manifest_space(path, rels, sizes, total, error, sizeof(error),
                                  code, sizeof(code), arg, sizeof(arg))) {
     free_task(task);
     free(path); free(src); free(total_text); free(count_text);

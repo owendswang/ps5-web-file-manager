@@ -87,7 +87,7 @@ window.WFM_LANG = {
   newTextPrompt: "Text file name",
   creatingText: "Creating text file...",
   createTextFailed: "Failed to create text file: {error}",
-  unsavedSaveConfirm: "The text has unsaved changes. Save before closing?\n\nCancel discards the changes and closes.",
+  unsavedSaveConfirm: "The text has unsaved changes. Close without saving?\n\nCancel keeps the editor open.",
   loadingText: "Loading text...",
   savingText: "Saving...",
   textSaved: "Text saved",

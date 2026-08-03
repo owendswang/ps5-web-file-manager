@@ -40,6 +40,7 @@ typedef struct task_completion {
 } task_completion_t;
 
 static int ensure_copy_dir(const char *path);
+static int open_copy_temp(const char *dst, char *temp, size_t temp_size);
 #if FILEMGR_PIPELINE_COPY
 typedef struct copy_pipeline_slot {
   char *data;
@@ -255,15 +256,13 @@ static int task_target_path(file_task_t *task, const char *src,
                             char *out, size_t size);
 
 static int count_path_bytes_sync(file_task_t *task, const char *path,
-                                 const char *display, const char *target,
+                                 const char *display,
                                  unsigned long long *total,
-                                 unsigned long long *reclaimable,
                                  size_t *file_count, size_t *dir_count);
 
 static int
 count_dir_bytes_sync(file_task_t *task, const char *path, const char *display,
-                     const char *target, unsigned long long *total,
-                     unsigned long long *reclaimable, size_t *file_count,
+                     unsigned long long *total, size_t *file_count,
                      size_t *dir_count) {
   DIR *dir = opendir(path);
   struct dirent *entry;
@@ -275,7 +274,6 @@ count_dir_bytes_sync(file_task_t *task, const char *path, const char *display,
   while((entry = readdir(dir))) {
     char child[PATH_MAX];
     char display_child[PATH_MAX];
-    char target_child[PATH_MAX];
     if(!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
       continue;
     }
@@ -285,11 +283,8 @@ count_dir_bytes_sync(file_task_t *task, const char *path, const char *display,
     if(path_join(child, sizeof(child), path, entry->d_name) ||
        (display && path_join(display_child, sizeof(display_child), display,
                              entry->d_name)) ||
-       (target && path_join(target_child, sizeof(target_child), target,
-                            entry->d_name)) ||
        count_path_bytes_sync(task, child, display ? display_child : NULL,
-                             target ? target_child : NULL, total, reclaimable,
-                             file_count, dir_count)) {
+                             total, file_count, dir_count)) {
       goto done;
     }
   }
@@ -301,12 +296,9 @@ done:
 
 static int
 count_path_bytes_sync(file_task_t *task, const char *path, const char *display,
-                      const char *target, unsigned long long *total,
-                      unsigned long long *reclaimable, size_t *file_count,
+                      unsigned long long *total, size_t *file_count,
                       size_t *dir_count) {
   struct stat st;
-  struct stat target_st;
-  int target_exists = 0;
 
   if(task && task_cancel_requested(task)) {
     return -1;
@@ -317,25 +309,13 @@ count_path_bytes_sync(file_task_t *task, const char *path, const char *display,
   if(lstat(path, &st)) {
     return -1;
   }
-  if(target) {
-    if(!lstat(target, &target_st)) {
-      target_exists = 1;
-    } else if(errno != ENOENT) {
-      return -1;
-    }
-  }
   if(S_ISDIR(st.st_mode)) {
     if(dir_count) (*dir_count)++;
-    return count_dir_bytes_sync(task, path, display,
-                                target_exists && S_ISDIR(target_st.st_mode) ?
-                                target : NULL,
-                                total, reclaimable, file_count, dir_count);
+    return count_dir_bytes_sync(task, path, display, total, file_count,
+                                dir_count);
   }
   if(S_ISREG(st.st_mode)) {
     *total += (unsigned long long)st.st_size;
-    if(reclaimable && target_exists && S_ISREG(target_st.st_mode)) {
-      *reclaimable += (unsigned long long)target_st.st_size;
-    }
     if(file_count) (*file_count)++;
   }
   return 0;
@@ -345,9 +325,7 @@ count_path_bytes_sync(file_task_t *task, const char *path, const char *display,
 typedef struct count_job {
   char path[PATH_MAX];
   char display[PATH_MAX];
-  char target[PATH_MAX];
   int has_display;
-  int has_target;
   struct count_job *next;
 } count_job_t;
 
@@ -367,18 +345,15 @@ typedef struct count_queue {
   int error_number;
   int worker_count;
   unsigned long long total;
-  unsigned long long reclaimable;
   size_t file_count;
   size_t dir_count;
 } count_queue_t;
 
 static void
-count_queue_add(count_queue_t *queue, unsigned long long total,
-                unsigned long long reclaimable, size_t file_count,
+count_queue_add(count_queue_t *queue, unsigned long long total, size_t file_count,
                 size_t dir_count) {
   pthread_mutex_lock(&queue->lock);
   queue->total += total;
-  queue->reclaimable += reclaimable;
   queue->file_count += file_count;
   queue->dir_count += dir_count;
   pthread_mutex_unlock(&queue->lock);
@@ -391,7 +366,6 @@ count_queue_worker(void *arg) {
   for(;;) {
     count_job_t *job;
     unsigned long long total = 0;
-    unsigned long long reclaimable = 0;
     size_t file_count = 0;
     size_t dir_count = 0;
     int ret;
@@ -416,10 +390,9 @@ count_queue_worker(void *arg) {
 
     ret = count_path_bytes_sync(queue->task, job->path,
                                 job->has_display ? job->display : NULL,
-                                job->has_target ? job->target : NULL,
-                                &total, &reclaimable, &file_count, &dir_count);
+                                &total, &file_count, &dir_count);
     if(!ret) {
-      count_queue_add(queue, total, reclaimable, file_count, dir_count);
+      count_queue_add(queue, total, file_count, dir_count);
     }
 
     pthread_mutex_lock(&queue->lock);
@@ -481,8 +454,7 @@ count_queue_init(count_queue_t *queue, file_task_t *task) {
 }
 
 static int
-count_queue_enqueue(count_queue_t *queue, const char *path, const char *display,
-                    const char *target) {
+count_queue_enqueue(count_queue_t *queue, const char *path, const char *display) {
   count_job_t *job;
 
   if(!(job = calloc(1, sizeof(*job)))) {
@@ -492,10 +464,6 @@ count_queue_enqueue(count_queue_t *queue, const char *path, const char *display,
   if(display) {
     snprintf(job->display, sizeof(job->display), "%s", display);
     job->has_display = 1;
-  }
-  if(target) {
-    snprintf(job->target, sizeof(job->target), "%s", target);
-    job->has_target = 1;
   }
 
   pthread_mutex_lock(&queue->lock);
@@ -565,14 +533,11 @@ count_queue_finish(count_queue_t *queue, int abort_pending) {
 
 static int
 count_path_bytes(file_task_t *task, const char *path, const char *display,
-                 const char *target, unsigned long long *total,
-                 unsigned long long *reclaimable, size_t *file_count,
+                 unsigned long long *total, size_t *file_count,
                  size_t *dir_count) {
   DIR *dir;
   struct dirent *entry;
   struct stat st;
-  struct stat target_st;
-  int target_exists = 0;
   int ret = -1;
   int queue_finished = 0;
   count_queue_t queue;
@@ -584,18 +549,11 @@ count_path_bytes(file_task_t *task, const char *path, const char *display,
     return -1;
   }
   if(!S_ISDIR(st.st_mode)) {
-    return count_path_bytes_sync(task, path, display, target, total,
-                                 reclaimable, file_count, dir_count);
+    return count_path_bytes_sync(task, path, display, total, file_count,
+                                 dir_count);
   }
   if(task) {
     task_update(task, TASK_RUNNING, display ? display : path, 0, NULL);
-  }
-  if(target) {
-    if(!lstat(target, &target_st)) {
-      target_exists = S_ISDIR(target_st.st_mode);
-    } else if(errno != ENOENT) {
-      return -1;
-    }
   }
   if(dir_count) (*dir_count)++;
   if(count_queue_init(&queue, task)) {
@@ -609,7 +567,6 @@ count_path_bytes(file_task_t *task, const char *path, const char *display,
   while((entry = readdir(dir))) {
     char child[PATH_MAX];
     char display_child[PATH_MAX];
-    char target_child[PATH_MAX];
 
     if(!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
       continue;
@@ -621,10 +578,7 @@ count_path_bytes(file_task_t *task, const char *path, const char *display,
     if(path_join(child, sizeof(child), path, entry->d_name) ||
        (display && path_join(display_child, sizeof(display_child), display,
                              entry->d_name)) ||
-       (target_exists && path_join(target_child, sizeof(target_child), target,
-                                   entry->d_name)) ||
-       count_queue_enqueue(&queue, child, display ? display_child : NULL,
-                           target_exists ? target_child : NULL)) {
+       count_queue_enqueue(&queue, child, display ? display_child : NULL)) {
       goto done;
     }
   }
@@ -633,9 +587,6 @@ count_path_bytes(file_task_t *task, const char *path, const char *display,
   queue_finished = 1;
   if(!ret) {
     *total += queue.total;
-    if(reclaimable) {
-      *reclaimable += queue.reclaimable;
-    }
     if(file_count) {
       *file_count += queue.file_count;
     }
@@ -656,16 +607,44 @@ done:
 
 int
 count_task_path_bytes(file_task_t *task, const char *path, const char *display,
-                      const char *target, unsigned long long *total,
-                      unsigned long long *reclaimable, size_t *file_count,
+                      unsigned long long *total, size_t *file_count,
                       size_t *dir_count) {
-  return count_path_bytes(task, path, display, target, total, reclaimable,
-                          file_count, dir_count);
+  return count_path_bytes(task, path, display, total, file_count, dir_count);
+}
+
+static int
+open_copy_temp(const char *dst, char *temp, size_t temp_size) {
+  char parent[PATH_MAX];
+  char name[96];
+  int attempt;
+
+  if(path_dirname(dst, parent, sizeof(parent))) {
+    return -1;
+  }
+  for(attempt = 0; attempt < 32; attempt++) {
+    int fd;
+
+    snprintf(name, sizeof(name), ".wfm-copy-%ld-%lld-%d.tmp",
+             (long)getpid(), (long long)time(NULL), attempt);
+    if(path_join(temp, temp_size, parent, name)) {
+      return -1;
+    }
+    fd = open(temp, O_WRONLY | O_CREAT | O_EXCL, 0600);
+    if(fd >= 0) {
+      return fd;
+    }
+    if(errno != EEXIST) {
+      return -1;
+    }
+  }
+  errno = EEXIST;
+  return -1;
 }
 
 static int
 copy_file_buffered(file_task_t *task, const char *src, const char *dst) {
   char *buf = NULL;
+  char temp[PATH_MAX] = {0};
   int in = -1;
   int out = -1;
   int ret = -1;
@@ -674,12 +653,13 @@ copy_file_buffered(file_task_t *task, const char *src, const char *dst) {
   task_update(task, TASK_RUNNING, dst, 0, NULL);
 
   if(task_cancel_requested(task)) {
+    errno = ECANCELED;
     return -1;
   }
   if((in = open(src, O_RDONLY)) < 0) {
     goto done;
   }
-  if((out = open(dst, O_WRONLY | O_CREAT | O_TRUNC, 0777)) < 0) {
+  if((out = open_copy_temp(dst, temp, sizeof(temp))) < 0) {
     goto done;
   }
   if(!(buf = malloc(COPY_BUFFER_SIZE))) {
@@ -691,6 +671,7 @@ copy_file_buffered(file_task_t *task, const char *src, const char *dst) {
     ssize_t left = n;
     char *p = buf;
     if(task_cancel_requested(task)) {
+      errno = ECANCELED;
       goto done;
     }
     while(left > 0) {
@@ -709,6 +690,10 @@ copy_file_buffered(file_task_t *task, const char *src, const char *dst) {
   if(fchmod_0777(out)) {
     goto done;
   }
+  if(task_cancel_requested(task)) {
+    errno = ECANCELED;
+    goto done;
+  }
   ret = 0;
 
 done:
@@ -717,7 +702,16 @@ done:
   if(out >= 0) {
     if(close(out)) ret = -1;
   }
-  if(ret) unlink(dst);
+  if(!ret && task_cancel_requested(task)) {
+    errno = ECANCELED;
+    ret = -1;
+  }
+  if(!ret && rename(temp, dst)) {
+    ret = -1;
+  }
+  if(ret && temp[0]) {
+    unlink(temp);
+  }
   return ret;
 }
 
@@ -774,6 +768,7 @@ static int
 copy_file_pipeline(file_task_t *task, const char *src, const char *dst) {
   copy_pipeline_t p;
   pthread_t reader;
+  char temp[PATH_MAX] = {0};
   int out = -1;
   int ret = -1;
   int reader_started = 0;
@@ -794,7 +789,7 @@ copy_file_pipeline(file_task_t *task, const char *src, const char *dst) {
   if((p.in = open(src, O_RDONLY)) < 0) {
     goto done;
   }
-  if((out = open(dst, O_WRONLY | O_CREAT | O_TRUNC, 0777)) < 0) {
+  if((out = open_copy_temp(dst, temp, sizeof(temp))) < 0) {
     goto done;
   }
   if(pthread_mutex_init(&p.lock, NULL)) {
@@ -873,6 +868,10 @@ copy_file_pipeline(file_task_t *task, const char *src, const char *dst) {
   if(fchmod_0777(out)) {
     goto done;
   }
+  if(task_cancel_requested(task)) {
+    errno = ECANCELED;
+    goto done;
+  }
   ret = 0;
 
 done:
@@ -895,7 +894,16 @@ done:
   if(out >= 0) {
     if(close(out)) ret = -1;
   }
-  if(ret) unlink(dst);
+  if(!ret && task_cancel_requested(task)) {
+    errno = ECANCELED;
+    ret = -1;
+  }
+  if(!ret && rename(temp, dst)) {
+    ret = -1;
+  }
+  if(ret && temp[0]) {
+    unlink(temp);
+  }
   return ret;
 }
 #endif
@@ -1557,7 +1565,6 @@ task_worker(void *arg) {
   file_task_t *task = arg;
   unsigned long long total = 0;
   unsigned long long required = 0;
-  unsigned long long reclaimable = 0;
   int ret = -1;
 
   task_update(task, TASK_RUNNING, "preparing", 0, NULL);
@@ -1591,7 +1598,6 @@ task_worker(void *arg) {
       unsigned long long before = total;
       int needs_space = task->op == TASK_COPY;
       char target[PATH_MAX];
-      const char *compare_target = NULL;
 
       if(task->op == TASK_COPY || task->op == TASK_MOVE) {
         if(task_target_path(task, task->srcs[i], target, sizeof(target))) {
@@ -1609,17 +1615,7 @@ task_worker(void *arg) {
           continue;
         }
       }
-      if(needs_space) {
-        struct stat target_st;
-        if(!lstat(target, &target_st)) {
-          compare_target = target;
-        } else if(errno != ENOENT) {
-          task_update(task, TASK_FAILED, target, 0, strerror(errno));
-          return NULL;
-        }
-      }
-      if(count_path_bytes(task, task->srcs[i], task->srcs[i], compare_target,
-                          &total, &reclaimable,
+      if(count_path_bytes(task, task->srcs[i], task->srcs[i], &total,
                           &task->file_count, &task->dir_count)) {
         if(errno == ECANCELED || task_cancel_requested(task)) {
           task_update(task, TASK_CANCELED, task->srcs[i], 0, "canceled");
@@ -1636,7 +1632,6 @@ task_worker(void *arg) {
       }
     }
     task_set_total(task, total);
-    required = reclaimable >= required ? 0 : required - reclaimable;
 
     if(task->op == TASK_COPY || task->op == TASK_MOVE) {
       char error[128] = {0};

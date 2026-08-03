@@ -87,7 +87,7 @@ window.WFM_LANG = {
   newTextPrompt: "文本文件名",
   creatingText: "正在新建文本...",
   createTextFailed: "新建文本失败: {error}",
-  unsavedSaveConfirm: "文本有未保存的修改，是否保存后关闭？\n\n取消将放弃修改并关闭。",
+  unsavedSaveConfirm: "文本有未保存的修改，是否不保存并关闭？\n\n取消将留在编辑器中。",
   loadingText: "正在读取文本...",
   savingText: "正在保存...",
   textSaved: "文本已保存",

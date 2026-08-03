@@ -26,7 +26,7 @@ let downloadFrame = null;
 let uploadXhr = null;
 let L = {};
 
-const APP_VERSION = "v1.0";
+const APP_VERSION = "v1.1";
 const LAST_PATH_KEY = "ps5-web-file-mgr:last-path";
 const SORT_KEY = "ps5-web-file-mgr:list-sort";
 const LOADING_DISPLAY_DELAY = 250;
@@ -609,7 +609,7 @@ function closeTextEditor() {
 function requestCloseTextEditor() {
   if (textEditorBusy) return;
   if (textEditorEl.value !== textEditorOriginal &&
-      confirm(t("unsavedSaveConfirm"))) return saveTextEditor();
+      !confirm(t("unsavedSaveConfirm"))) return;
   return closeTextEditor();
 }
 
