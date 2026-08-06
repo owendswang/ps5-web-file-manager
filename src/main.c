@@ -150,6 +150,9 @@ main(int argc, char **argv) {
 #endif
 
     websrv_listen(port);
+    if(websrv_stop_requested()) {
+      break;
+    }
     sleep(3);
   }
 

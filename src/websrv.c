@@ -15,6 +15,9 @@
 
 #define REQUEST_BODY_MAX (4 * 1024 * 1024)
 
+static volatile sig_atomic_t g_stop_requested;
+static int g_listen_fd = -1;
+
 typedef struct request_context {
   char *body;
   size_t size;
@@ -49,6 +52,19 @@ websrv_queue_response(struct MHD_Connection *conn, unsigned int status,
   MHD_add_response_header(resp, MHD_HTTP_HEADER_ACCESS_CONTROL_ALLOW_ORIGIN, "*");
   MHD_add_response_header(resp, MHD_HTTP_HEADER_CACHE_CONTROL, "no-store");
   return MHD_queue_response(conn, status, resp);
+}
+
+void
+websrv_stop(void) {
+  g_stop_requested = 1;
+  if(g_listen_fd >= 0) {
+    shutdown(g_listen_fd, SHUT_RDWR);
+  }
+}
+
+int
+websrv_stop_requested(void) {
+  return g_stop_requested;
 }
 
 static enum MHD_Result
@@ -190,6 +206,8 @@ websrv_listen(unsigned short port) {
     close(srvfd);
     return -1;
   }
+  g_stop_requested = 0;
+  g_listen_fd = srvfd;
 
   if(!(httpd = MHD_start_daemon(MHD_USE_THREAD_PER_CONNECTION | MHD_USE_ITC |
                                 MHD_USE_NO_LISTEN_SOCKET | MHD_USE_DEBUG |
@@ -202,10 +220,10 @@ websrv_listen(unsigned short port) {
     return -1;
   }
 
-  while(1) {
+  while(!g_stop_requested) {
     addr_len = sizeof(client_addr);
     if((connfd = accept(srvfd, (struct sockaddr *)&client_addr, &addr_len)) < 0) {
-      perror("accept");
+      if(!g_stop_requested) perror("accept");
       break;
     }
     if(MHD_add_connection(httpd, connfd, (struct sockaddr *)&client_addr,
@@ -217,5 +235,6 @@ websrv_listen(unsigned short port) {
   }
 
   MHD_stop_daemon(httpd);
+  g_listen_fd = -1;
   return close(srvfd);
 }

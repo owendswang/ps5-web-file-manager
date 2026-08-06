@@ -1868,10 +1868,10 @@ api_cancel(struct MHD_Connection *conn) {
 }
 
 static void *
-exit_later(void *arg) {
+stop_websrv_later(void *arg) {
   (void)arg;
   usleep(250000);
-  exit(0);
+  websrv_stop();
   return NULL;
 }
 
@@ -1879,7 +1879,7 @@ static enum MHD_Result
 api_exit(struct MHD_Connection *conn) {
   pthread_t thread;
 
-  if(!pthread_create(&thread, NULL, exit_later, NULL)) {
+  if(!pthread_create(&thread, NULL, stop_websrv_later, NULL)) {
     pthread_detach(thread);
   }
   return send_json_ok(conn);

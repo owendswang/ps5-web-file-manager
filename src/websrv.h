@@ -23,3 +23,5 @@ enum MHD_Result websrv_queue_response(struct MHD_Connection *conn,
 				      struct MHD_Response *resp);
 
 int websrv_listen(unsigned short port);
+void websrv_stop(void);
+int websrv_stop_requested(void);
