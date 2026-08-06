@@ -18,6 +18,7 @@
 #include "filemgr_internal.h"
 #include "json_util.h"
 #include "path_util.h"
+#include "pkg_installer.h"
 #include "websrv.h"
 
 #define COPY_BUFFER_SIZE (8 * 1024 * 1024)
@@ -2008,6 +2009,42 @@ api_mkdir(struct MHD_Connection *conn) {
              : send_json_ok(conn);
 }
 
+static enum MHD_Result
+api_install_pkg(struct MHD_Connection *conn) {
+  char *path = fs_path_value(query_value(conn, "path"));
+  const char *extension;
+  struct stat st;
+  char error_code[16];
+  int result;
+
+  if(!path || !(extension = strrchr(path, '.')) ||
+     strcasecmp(extension, ".pkg")) {
+    free(path);
+    return send_json_error_detail(conn, MHD_HTTP_BAD_REQUEST,
+                                  "file is not a PKG package",
+                                  "pkg_type_invalid", NULL);
+  }
+  if(stat(path, &st) || !S_ISREG(st.st_mode)) {
+    free(path);
+    return send_json_error(conn, MHD_HTTP_NOT_FOUND, "file not found");
+  }
+
+  result = pkg_installer_install(path);
+  free(path);
+  if(result == PKG_INSTALL_UNSUPPORTED) {
+    return send_json_error_detail(conn, MHD_HTTP_NOT_IMPLEMENTED,
+                                  "package installation is only available on PS5",
+                                  "pkg_install_unsupported", NULL);
+  }
+  if(result) {
+    snprintf(error_code, sizeof(error_code), "0x%08X", (unsigned int)result);
+    return send_json_error_detail(conn, MHD_HTTP_INTERNAL_SERVER_ERROR,
+                                  "package installation failed",
+                                  "pkg_install_failed", error_code);
+  }
+  return send_json_ok(conn);
+}
+
 enum MHD_Result
 filemgr_api_request(struct MHD_Connection *conn, const char *url,
                     const char *method, const char *body, size_t body_size) {
@@ -2029,6 +2066,11 @@ filemgr_api_request(struct MHD_Connection *conn, const char *url,
   if(!strcmp(url, "/api/upload/finish")) return api_upload_finish(conn);
   if(!strcmp(url, "/api/rename")) return api_rename(conn);
   if(!strcmp(url, "/api/mkdir")) return api_mkdir(conn);
+  if(!strcmp(url, "/api/install-pkg")) {
+    return strcmp(method, MHD_HTTP_METHOD_POST) ?
+      send_json_error(conn, MHD_HTTP_METHOD_NOT_ALLOWED, "invalid method") :
+      api_install_pkg(conn);
+  }
   if(!strcmp(url, "/api/text")) {
     return strcmp(method, MHD_HTTP_METHOD_GET) ?
       send_json_error(conn, MHD_HTTP_METHOD_NOT_ALLOWED, "invalid method") :

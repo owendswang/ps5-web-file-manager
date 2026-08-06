@@ -38,6 +38,7 @@ PS5 web file manager payload. It runs an HTTP UI starting at port `8888`, instal
 - Home screen launcher icon and browser favicon use the same embedded `icon0.png` data in the PS5 build to avoid storing the icon twice in the ELF.
 - Create/edit text files ending with `.txt`, `.json`, `.xml`, `.ini`, `.cfg`, `.conf`, `.md`, `.log`, `.lua`, `.js`, `.css`, `.html`, `.htm`, `.c`, `.h`, `.cpp`, `.hpp`, `.sh`, `.csv`, `.yaml`, `.yml`, `.shn`.
 - Preview image files ending with `.png`, `.jpg`, `.jpeg`, `.gif`, `.bmp`, `.webp`.
+- Install PKG files ends with `.pkg`.
 
 ## Build
 

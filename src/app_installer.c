@@ -9,6 +9,7 @@
 #include <ps5/kernel.h>
 
 #include "asset.h"
+#include "pkg_installer.h"
 
 #define INCASSET(name, file)                    \
   __asm__(".section .rodata\n"                  \
@@ -28,7 +29,6 @@
 INCASSET(param_json, "assets/param.json");
 INCASSET(icon0_png, "assets/icon0.png");
 
-int sceAppInstUtilInitialize(void);
 int sceAppInstUtilAppInstallAll(void *);
 
 static int
@@ -111,7 +111,7 @@ app_install_if_needed(void) {
 
   printf("Installing launcher app %s\n", title_id);
 
-  if((err = sceAppInstUtilInitialize())) {
+  if((err = pkg_installer_initialize())) {
     printf("sceAppInstUtilInitialize: error 0x%08X\n", err);
     return -1;
   }

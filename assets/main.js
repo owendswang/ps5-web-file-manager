@@ -18,6 +18,7 @@ let directoryLoadingStartedAt = 0;
 let taskOverlayTimer = 0;
 let lastCompletionId = null;
 let taskPollFailedAlertShown = false;
+let localActionBusy = false;
 let textEditorPath = null;
 let textEditorVersion = null;
 let textEditorOriginal = "";
@@ -26,7 +27,7 @@ let downloadFrame = null;
 let uploadXhr = null;
 let L = {};
 
-const APP_VERSION = "v1.1";
+const APP_VERSION = "v1.2";
 const LAST_PATH_KEY = "ps5-web-file-mgr:last-path";
 const SORT_KEY = "ps5-web-file-mgr:list-sort";
 const LOADING_DISPLAY_DELAY = 250;
@@ -54,6 +55,7 @@ const pasteVerbEl = document.getElementById("pasteVerb");
 const pasteNameEl = document.getElementById("pasteName");
 const pasteCountEl = document.getElementById("pasteCount");
 const pasteTargetTextEl = document.getElementById("pasteTargetText");
+const installPkgBtn = document.getElementById("installPkgBtn");
 const clearClipboardBtn = document.getElementById("clearClipboardBtn");
 const downloadBtn = document.getElementById("downloadBtn");
 const uploadMenuEl = document.getElementById("uploadMenu");
@@ -559,6 +561,7 @@ function pathIsSameOrChild(parent, child) {
 }
 
 function typeLabel(type) {
+  if (type === "parent") return t("parent");
   return type === "d" ? t("dir") : t("file");
 }
 
@@ -569,6 +572,54 @@ function isEditableText(item) {
 
 function isPreviewableImage(item) {
   return item.type === "-" && /\.(png|jpe?g|gif|bmp|webp)$/i.test(item.name);
+}
+
+function isPkgPackage(item) {
+  return item.type === "-" && /\.pkg$/i.test(item.name);
+}
+
+function itemTypeLabel(item) {
+  if (item.type === "parent" || item.type === "d") return typeLabel(item.type);
+  if (isPkgPackage(item)) return "PKG";
+  if (isPreviewableImage(item)) return t("image");
+  if (isEditableText(item)) return t("textFile");
+  return t("file");
+}
+
+async function installPkg(item) {
+  if (busy || loadingPath) return;
+  try {
+    localActionBusy = true;
+    setBusy(true);
+    setStatus(t("pkgInstalling", { name: displayName(item) }));
+    await api("/api/install-pkg", { path: item.path });
+    setStatus(t("pkgInstallStarted", { name: displayName(item) }));
+  } catch (err) {
+    showActionFailed(t("installPackage"), err.message);
+  } finally {
+    localActionBusy = false;
+    setBusy(false);
+  }
+}
+
+async function actionInstallSelectedPkgs() {
+  if (busy || loadingPath) return;
+  const items = selectedEntries().filter(isPkgPackage);
+  if (!items.length) return;
+  try {
+    localActionBusy = true;
+    setBusy(true);
+    for (let i = 0; i < items.length; i++) {
+      setStatus(t("pkgInstalling", { name: displayName(items[i]) }));
+      await api("/api/install-pkg", { path: items[i].path });
+    }
+    setStatus(t("pkgInstallStarted", { name: itemTitle(items) }));
+  } catch (err) {
+    showActionFailed(t("installPackage"), err.message);
+  } finally {
+    localActionBusy = false;
+    setBusy(false);
+  }
 }
 
 function openImagePreview(item) {
@@ -708,6 +759,17 @@ function resetScrollTop() {
   if (window.requestAnimationFrame) requestAnimationFrame(apply);
 }
 
+function revealPathInList(path) {
+  const row = filesEl.querySelector("tr[data-path=\"" + cssEscape(path) + "\"]");
+  if (!row) return;
+
+  const top = row.offsetTop;
+  const maxScroll = contentEl.scrollHeight - contentEl.clientHeight;
+  if (maxScroll <= 0) return;
+  const target = top - Math.floor((contentEl.clientHeight - row.offsetHeight) / 2);
+  contentEl.scrollTop = Math.max(0, Math.min(maxScroll, target));
+}
+
 function clipboardTitle() {
   if (!clipboard || clipboard.items.length === 0) return "";
   return itemTitle(clipboard.items);
@@ -740,7 +802,7 @@ function compareEntries(a, b) {
 
   let result = 0;
   if (sortKey === "name") result = compareText(displayName(a), displayName(b));
-  else if (sortKey === "type") result = compareText(typeLabel(a.type), typeLabel(b.type));
+  else if (sortKey === "type") result = compareText(itemTypeLabel(a), itemTypeLabel(b));
   else if (sortKey === "size") result = (a.type === "d" ? 0 : Number(a.size || 0)) -
     (b.type === "d" ? 0 : Number(b.size || 0));
   else if (sortKey === "mtime") result = Number(a.mtime || 0) - Number(b.mtime || 0);
@@ -804,6 +866,19 @@ function renderClipboard() {
   clearClipboardBtn.disabled = locked;
 }
 
+function renderInstallPkgButton(items, locked) {
+  const pkgs = items.filter(isPkgPackage);
+  installPkgBtn.hidden = pkgs.length === 0;
+  if (!pkgs.length) {
+    installPkgBtn.title = "";
+    installPkgBtn.disabled = true;
+    return;
+  }
+  const title = itemTitle(pkgs);
+  installPkgBtn.title = t("installPackage") + ": " + title;
+  installPkgBtn.disabled = locked;
+}
+
 function singleSelected() {
   const items = selectedEntries();
   return items.length === 1 ? items[0] : null;
@@ -826,6 +901,7 @@ function updateButtons() {
   selectAllEl.disabled = locked;
   selectAllEl.checked = entries.length > 0 && items.length === entries.length;
   selectAllEl.indeterminate = items.length > 0 && items.length < entries.length;
+  renderInstallPkgButton(items, locked);
   renderClipboard();
 }
 
@@ -1006,6 +1082,7 @@ function render() {
     const iconImg = document.createElement("img");
     iconImg.className = "icon";
     iconImg.src = isParent ? "/icon-up.png" : item.type === "d" ? "/icon-folder.png" :
+      isPkgPackage(item) ? "/icon-pkg.png" :
       isPreviewableImage(item) ? "/icon-image.png" :
       isEditableText(item) ? "/icon-file.png" : "/icon-generic.png";
     iconImg.alt = "";
@@ -1017,7 +1094,7 @@ function render() {
       tr,
       selectTd,
       nameTd,
-      classCell("type-col", isParent ? t("parent") : item.type === "d" ? t("dir") : t("file")),
+      classCell("type-col", itemTypeLabel(item)),
       classCell("size-col", formatSize(item.size, item.type)),
       classCell("time-col", formatTime(item.mtime)),
       classCell("mode-col", isParent ? "" : "0" + Number(item.mode).toString(8))
@@ -1164,10 +1241,10 @@ function validatePasteTarget() {
       return {
         ok: false,
         message: t("removeConflictFirst", {
-          existingType: typeLabel(existing.type),
+          existingType: itemTypeLabel(existing),
           name: item.name,
           label: clipboard.op === "move" ? t("move") : t("copy"),
-          sourceType: typeLabel(item.type)
+          sourceType: itemTypeLabel(item)
         })
       };
     }
@@ -1334,7 +1411,7 @@ function renderTasks(tasks) {
     DOWNLOAD_OVERLAY_DISPLAY_DELAY : LOADING_DISPLAY_DELAY);
   else {
     hideTaskOverlay();
-    setBusy(false);
+    if (!localActionBusy) setBusy(false);
   }
 
   if (!hasActive) return;
@@ -1436,8 +1513,11 @@ async function pollTasks() {
       }));
     }
     const wasBusy = busy;
+    const wasTaskBusy = Boolean(trackedTask || pendingOverlayText ||
+      !overlayEl.hidden || taskOverlayTimer);
     renderTasks(tasks);
     const becameIdle = wasBusy && !busy;
+    const taskBecameIdle = wasTaskBusy && !busy;
     let shouldRefresh = false;
     let sawTrackedTask = false;
     for (const task of tasks) {
@@ -1458,9 +1538,9 @@ async function pollTasks() {
       shouldRefresh = true;
       clearTrackedTask();
     }
-    if (becameIdle && !tasks.length) shouldRefresh = true;
+    if (taskBecameIdle && !tasks.length) shouldRefresh = true;
     if (shouldRefresh) {
-      if (becameIdle) startContentLoadingTimer();
+      if (taskBecameIdle) startContentLoadingTimer();
       clearSelection(false);
       await load(taskRefreshPath || cwd, false);
       await refreshSpaces();
@@ -1690,6 +1770,7 @@ document.getElementById("mkdirBtn").addEventListener("click", () => {
 document.getElementById("copyBtn").addEventListener("click", actionCopy);
 document.getElementById("moveBtn").addEventListener("click", actionMove);
 pasteBtn.addEventListener("click", actionPaste);
+installPkgBtn.addEventListener("click", actionInstallSelectedPkgs);
 clearClipboardBtn.addEventListener("click", clearClipboard);
 document.getElementById("renameBtn").addEventListener("click", actionRename);
 downloadBtn.addEventListener("click", actionDownload);
@@ -1755,10 +1836,14 @@ filesEl.addEventListener("click", event => {
   };
   focusPath(item.path);
   if (item.type === "parent" || item.type === "d") {
+    const revealPath = item.type === "parent" ? cwd : "";
     setTimeout(async () => {
-      if (!(await load(item.path, undefined, false, true))) await load(cwd, false, true);
+      if (await load(item.path, item.type === "parent" ? false : undefined, false, true)) {
+        /* if (revealPath) revealPathInList(revealPath); */
+      } else await load(cwd, false, true);
     }, 0);
   }
+  else if (isPkgPackage(item)) installPkg(item);
   else if (isPreviewableImage(item)) openImagePreview(item);
   else if (isEditableText(item)) openTextEditor(item);
   else togglePath(item.path, !selected.has(item.path));

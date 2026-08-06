@@ -329,7 +329,7 @@ button.primary:hover {
 }
 
 .paste-action {
-  max-width: 480px;
+  max-width: 360px;
 }
 
 .paste-action > * {
@@ -341,10 +341,21 @@ button.primary:hover {
   display: inline-block;
   flex: 1 1 auto;
   min-width: 0;
-  max-width: 180px;
+  max-width: 120px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.install-action {
+  min-width: 88px;
+  border-color: #8c6425;
+  background: #352b1c;
+  color: #f8dfae;
+}
+
+button.install-action:hover {
+  background: #433521;
 }
 
 .paste-count {
