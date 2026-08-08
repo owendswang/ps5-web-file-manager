@@ -19,6 +19,8 @@ let taskOverlayTimer = 0;
 let lastCompletionId = null;
 let taskPollFailedAlertShown = false;
 let localActionBusy = false;
+let specialStoragePaths = {};
+let hasSpecialMntStorage = false;
 let textEditorPath = null;
 let textEditorVersion = null;
 let textEditorOriginal = "";
@@ -27,7 +29,7 @@ let downloadFrame = null;
 let uploadXhr = null;
 let L = {};
 
-const APP_VERSION = "v1.2";
+const APP_VERSION = "v1.3";
 const LAST_PATH_KEY = "ps5-web-file-mgr:last-path";
 const SORT_KEY = "ps5-web-file-mgr:list-sort";
 const LOADING_DISPLAY_DELAY = 250;
@@ -50,6 +52,7 @@ const versionEl = document.getElementById("versionText");
 const tasksEl = document.getElementById("tasks");
 const overlayEl = document.getElementById("taskOverlay");
 const selectAllEl = document.getElementById("selectAll");
+const parentBtn = document.getElementById("parentBtn");
 const pasteBtn = document.getElementById("pasteBtn");
 const pasteVerbEl = document.getElementById("pasteVerb");
 const pasteNameEl = document.getElementById("pasteName");
@@ -133,6 +136,8 @@ function applyStaticText() {
   }
   exitBtn.title = t("exit");
   exitBtn.setAttribute("aria-label", t("exit"));
+  parentBtn.title = t("parent");
+  parentBtn.setAttribute("aria-label", t("parent"));
   versionEl.textContent = APP_VERSION;
   if (initLoadingEl) initLoadingEl.hidden = true;
 }
@@ -525,6 +530,7 @@ function saveSort() {
 async function refreshSpaces() {
   try {
     const data = await api("/api/space", { path: cwd });
+    updateSpecialStoragePaths(data.spaces || []);
     spaceInfoEl.innerHTML = "";
     if ((data.spaces || []).length) {
       const prefix = document.createElement("span");
@@ -544,6 +550,24 @@ async function refreshSpaces() {
   } catch (err) {
     spaceInfoEl.textContent = "";
   }
+}
+
+function updateSpecialStoragePaths(spaces) {
+  const next = {};
+  let hasMnt = false;
+  for (let i = 0; i < spaces.length; i++) {
+    const path = spaces[i].path || "";
+    if (/^\/mnt\/(?:usb|ext)[0-9]+$/.test(path)) {
+      next[path] = true;
+      hasMnt = true;
+    }
+  }
+
+  const changed = hasMnt !== hasSpecialMntStorage ||
+    Object.keys(next).join("\n") !== Object.keys(specialStoragePaths).join("\n");
+  specialStoragePaths = next;
+  hasSpecialMntStorage = hasMnt;
+  if (changed && entries.length) render();
 }
 
 function selectedEntries() {
@@ -576,6 +600,13 @@ function isPreviewableImage(item) {
 
 function isPkgPackage(item) {
   return item.type === "-" && /\.pkg$/i.test(item.name);
+}
+
+function isSpecialDirectory(item) {
+  if (item.type !== "d") return false;
+  if (item.path === "/data") return true;
+  if (item.path === "/mnt") return hasSpecialMntStorage;
+  return Boolean(specialStoragePaths[item.path]);
 }
 
 function itemTypeLabel(item) {
@@ -899,6 +930,7 @@ function updateButtons() {
   document.getElementById("mkdirBtn").disabled = locked;
   newTextBtn.disabled = locked;
   selectAllEl.disabled = locked;
+  parentBtn.disabled = locked || loadingPath || cwd === "/";
   selectAllEl.checked = entries.length > 0 && items.length === entries.length;
   selectAllEl.indeterminate = items.length > 0 && items.length < entries.length;
   renderInstallPkgButton(items, locked);
@@ -1040,14 +1072,7 @@ function render() {
   emptyEl.hidden = entries.length !== 0;
   const fragment = document.createDocumentFragment();
 
-  const rows = cwd === "/" ? entries : [{
-    name: "..",
-    path: parentPath(cwd),
-    type: "parent",
-    mode: 0,
-    size: 0,
-    mtime: 0
-  }].concat(entries);
+  const rows = entries;
 
   for (const item of rows) {
     const isParent = item.type === "parent";
@@ -1080,7 +1105,7 @@ function render() {
     nameText.textContent = displayName(item);
     nameBtn.title = displayPath(item.path);
     const iconImg = document.createElement("img");
-    iconImg.className = "icon";
+    iconImg.className = "icon" + (isSpecialDirectory(item) ? " special-folder-icon" : "");
     iconImg.src = isParent ? "/icon-up.png" : item.type === "d" ? "/icon-folder.png" :
       isPkgPackage(item) ? "/icon-pkg.png" :
       isPreviewableImage(item) ? "/icon-image.png" :
@@ -1110,6 +1135,15 @@ function parentPath(path) {
   const parts = path.replace(/\/+$/, "").split("/");
   parts.pop();
   return parts.join("/") || "/";
+}
+
+function actionParentDirectory(event) {
+  if (event) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+  if (busy || loadingPath || cwd === "/") return;
+  load(parentPath(cwd), undefined, false, true);
 }
 
 function cell(text) {
@@ -1781,6 +1815,7 @@ uploadFolderBtn.addEventListener("click", actionUploadFolder);
 uploadFilesEl.addEventListener("change", () => uploadFiles(uploadFilesEl.files));
 uploadFolderEl.addEventListener("change", () => uploadFiles(uploadFolderEl.files));
 exitBtn.addEventListener("click", actionExit);
+parentBtn.addEventListener("click", actionParentDirectory);
 textEditorCloseBtn.addEventListener("click", requestCloseTextEditor);
 textEditorSaveBtn.addEventListener("click", saveTextEditor);
 newTextBtn.addEventListener("click", actionNewText);
@@ -1791,6 +1826,7 @@ document.addEventListener("click", event => {
 });
 document.querySelector("thead").addEventListener("click", event => {
   if (busy || loadingPath) return;
+  if (parentBtn.contains(event.target)) return;
   let target = event.target;
   while (target && target.tagName !== "TH") target = target.parentNode;
   if (target && target.getAttribute("data-sort")) setSort(target.getAttribute("data-sort"));

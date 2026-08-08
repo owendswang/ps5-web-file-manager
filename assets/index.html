@@ -72,7 +72,14 @@
         <thead>
           <tr>
             <th class="select-col"><label class="select-hit"><input id="selectAll" type="checkbox"></label></th>
-            <th class="name-col sortable" data-sort="name" data-i18n="name"></th>
+            <th class="name-col sortable" data-sort="name">
+              <div class="name-head">
+                <button id="parentBtn" class="parent-nav-button" type="button" aria-label="Parent directory" disabled>
+                  <img src="/icon-back.png" alt="">
+                </button>
+                <span class="name-heading" data-i18n="name"></span>
+              </div>
+            </th>
             <th class="type-col sortable" data-sort="type" data-i18n="type"></th>
             <th class="size-col sortable" data-sort="size" data-i18n="size"></th>
             <th class="time-col sortable" data-sort="mtime" data-i18n="mtime"></th>

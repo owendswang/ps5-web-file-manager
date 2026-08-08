@@ -297,8 +297,8 @@ button:focus,
   outline-offset: 2px;
 }
 
-button:not(.row-action):hover,
-.button:hover {
+button:not(.row-action):hover:not(:disabled),
+.button:hover:not(:disabled) {
   background: #303945;
 }
 
@@ -319,7 +319,7 @@ button:disabled,
   background: #285943;
 }
 
-button.primary:hover {
+button.primary:hover:not(:disabled) {
   background: #347358;
 }
 
@@ -354,7 +354,7 @@ button.primary:hover {
   color: #f8dfae;
 }
 
-button.install-action:hover {
+button.install-action:hover:not(:disabled) {
   background: #433521;
 }
 
@@ -438,6 +438,80 @@ th.sorted-asc::after {
 
 th.sorted-desc::after {
   content: "v";
+}
+
+.name-head {
+  height: 78px;
+  min-height: 78px;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+th.name-col {
+  padding: 0;
+}
+
+th.name-col.sortable::after {
+  content: none;
+}
+
+.name-heading {
+  min-width: 100px;
+  padding-left: 18px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.name-heading::after {
+  content: "";
+  display: inline-block;
+  width: 12px;
+  margin-left: 8px;
+  color: #aeb8c2;
+  text-align: center;
+}
+
+th.name-col.sorted-asc .name-heading::after {
+  content: "^";
+}
+
+th.name-col.sorted-desc .name-heading::after {
+  content: "v";
+}
+
+.parent-nav-button {
+  width: 78px;
+  min-width: 78px;
+  height: 78px;
+  min-height: 78px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  position: relative;
+}
+
+.parent-nav-button img {
+  width: 32px;
+  height: 32px;
+  display: block;
+}
+
+.parent-nav-button:hover:not(:disabled) {
+  background: #222932;
+}
+
+.parent-nav-button:not(:disabled):focus {
+  outline-offset: -5px;
+}
+
+.parent-nav-button:disabled img {
+  opacity: .42;
+}
+
+.parent-nav-button:disabled {
+  pointer-events: auto;
 }
 
 .select-col {
@@ -525,6 +599,13 @@ input[type="checkbox"] {
   height: 32px;
   flex: 0 0 32px;
   display: block;
+}
+
+.special-folder-icon {
+  -webkit-filter: hue-rotate(65deg);
+  filter: hue-rotate(65deg);
+  -webkit-transform: scale(1.1);
+  transform: scale(1.1);
 }
 
 .row-action {
@@ -986,10 +1067,21 @@ input[type="checkbox"] {
 
   tr,
   thead tr,
+  .name-head,
+  .parent-nav-button,
   .select-hit,
   .row-action {
     height: 56px;
     min-height: 56px;
+  }
+
+  .parent-nav-button {
+    width: 56px;
+    min-width: 56px;
+  }
+
+  .name-heading {
+    padding-left: 12px;
   }
 
   .row-action {
