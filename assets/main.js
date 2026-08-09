@@ -29,7 +29,7 @@ let downloadFrame = null;
 let uploadXhr = null;
 let L = {};
 
-const APP_VERSION = "v1.3";
+const APP_VERSION = "v1.4";
 const LAST_PATH_KEY = "ps5-web-file-mgr:last-path";
 const SORT_KEY = "ps5-web-file-mgr:list-sort";
 const LOADING_DISPLAY_DELAY = 250;
@@ -316,6 +316,23 @@ function displayPath(path) {
   return decodeFsText(path);
 }
 
+function renderAddressPath() {
+  const path = displayPath(cwd);
+  pathEl.title = path;
+  pathEl.textContent = path;
+  if (pathEl.scrollWidth <= pathEl.clientWidth) return;
+
+  let low = 0;
+  let high = path.length;
+  while (low < high) {
+    const count = Math.ceil((low + high) / 2);
+    pathEl.textContent = "..." + path.slice(-count);
+    if (pathEl.scrollWidth <= pathEl.clientWidth) low = count;
+    else high = count - 1;
+  }
+  pathEl.textContent = "..." + path.slice(-low);
+}
+
 async function fetchText(path, params) {
   const response = await request(path, params, { method: "GET" });
   return {
@@ -547,8 +564,10 @@ async function refreshSpaces() {
       span.title = item.path + " " + span.textContent;
       spaceInfoEl.appendChild(span);
     }
+    renderAddressPath();
   } catch (err) {
     spaceInfoEl.textContent = "";
+    renderAddressPath();
   }
 }
 
@@ -1172,7 +1191,7 @@ async function load(path, scrollTop, force, alertOnError) {
     }
     if (!contentLoadingEl.hidden) await nextPaint();
     cwd = data.path;
-    pathEl.textContent = displayPath(cwd);
+    renderAddressPath();
     savePath(cwd);
     refreshSpaces();
     entries = data.entries.sort(compareEntries);
@@ -1820,6 +1839,7 @@ textEditorCloseBtn.addEventListener("click", requestCloseTextEditor);
 textEditorSaveBtn.addEventListener("click", saveTextEditor);
 newTextBtn.addEventListener("click", actionNewText);
 imagePreviewCloseBtn.addEventListener("click", closeImagePreview);
+window.addEventListener("resize", renderAddressPath);
 document.addEventListener("click", event => {
   if (!uploadMenuEl || uploadMenuEl.contains(event.target)) return;
   uploadMenuEl.classList.remove("open");
@@ -1920,7 +1940,7 @@ async function init() {
   updateSortHeaders();
   const savedPath = readSavedPath();
   cwd = savedPath;
-  pathEl.textContent = displayPath(cwd);
+  renderAddressPath();
   taskRefreshPath = savedPath;
   refreshSpaces();
   await pollTasks();
