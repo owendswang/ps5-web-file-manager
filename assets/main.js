@@ -930,7 +930,7 @@ function updateButtons() {
   document.getElementById("mkdirBtn").disabled = locked;
   newTextBtn.disabled = locked;
   selectAllEl.disabled = locked;
-  parentBtn.disabled = locked || loadingPath || cwd === "/";
+  parentBtn.disabled = cwd === "/";
   selectAllEl.checked = entries.length > 0 && items.length === entries.length;
   selectAllEl.indeterminate = items.length > 0 && items.length < entries.length;
   renderInstallPkgButton(items, locked);
@@ -1187,8 +1187,8 @@ async function load(path, scrollTop, force, alertOnError) {
     if (alertOnError) alert(err.message);
     return false;
   } finally {
-    hideContentLoading();
     loadingPath = null;
+    hideContentLoading();
   }
 }
 

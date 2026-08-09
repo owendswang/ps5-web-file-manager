@@ -2,11 +2,13 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 
 #include "filemgr_internal.h"
 #include "mime.h"
+#include "path_util.h"
 #include "websrv.h"
 
 static ssize_t
@@ -31,7 +33,7 @@ file_close(void *cls) {
 
 enum MHD_Result
 filemgr_fs_request(struct MHD_Connection *conn) {
-  const char *path = MHD_lookup_connection_value(conn, MHD_GET_ARGUMENT_KIND, "path");
+  char *path = fs_path_value(query_value(conn, "path"));
   struct MHD_Response *resp;
   enum MHD_Result ret = MHD_NO;
   struct stat st;
@@ -43,6 +45,7 @@ filemgr_fs_request(struct MHD_Connection *conn) {
 
   if(!path || stat(path, &st) || !S_ISREG(st.st_mode) ||
      !(file = fopen(path, "rb"))) {
+    free(path);
     return send_json_error(conn, MHD_HTTP_NOT_FOUND, "file not found");
   }
 
@@ -55,9 +58,11 @@ filemgr_fs_request(struct MHD_Connection *conn) {
     }
     ret = websrv_queue_response(conn, MHD_HTTP_OK, resp);
     MHD_destroy_response(resp);
+    free(path);
     return ret;
   }
 
   fclose(file);
+  free(path);
   return MHD_NO;
 }

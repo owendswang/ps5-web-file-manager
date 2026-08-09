@@ -2,7 +2,10 @@
 
 #ifndef __linux__
 
+#include <limits.h>
 #include <pthread.h>
+#include <stdio.h>
+#include <string.h>
 
 typedef struct pkg_metadata {
   const char *uri;
@@ -57,8 +60,10 @@ pkg_installer_initialize(void) {
 
 int
 pkg_installer_install(const char *path) {
+  char install_path[PATH_MAX + sizeof("/user")];
+  const char *uri = path;
   pkg_metadata_t metadata = {
-    .uri = path,
+    .uri = NULL,
     .ex_uri = "",
     .playgo_scenario_id = "",
     .content_id = "",
@@ -68,6 +73,13 @@ pkg_installer_install(const char *path) {
   pkg_info_t pkg_info = {0};
   playgo_info_t playgo_info = {0};
   int result;
+
+  if(!path) return -1;
+  if(!strncmp(path, "/data/", 6)) {
+    snprintf(install_path, sizeof(install_path), "/user%s", path);
+    uri = install_path;
+  }
+  metadata.uri = uri;
 
   pthread_mutex_lock(&installer_lock);
   result = initialize_locked();
