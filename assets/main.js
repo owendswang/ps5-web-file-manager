@@ -515,6 +515,54 @@ function readSavedPath() {
   }
 }
 
+function historyPath() {
+  const hash = window.location.hash || "";
+  if (hash.length <= 1) return "";
+  try {
+    const path = decodeURIComponent(hash.slice(1));
+    return path.charAt(0) === "/" ? path : "";
+  } catch (err) {
+    return "";
+  }
+}
+
+function writeHistoryPath(path, replace) {
+  if (!window.history || !history.pushState) return;
+  const hash = "#" + encodeURIComponent(path || "/");
+  if (window.location.hash === hash) return;
+  const state = { path: path || "/" };
+  if (replace && history.replaceState) history.replaceState(state, "", hash);
+  else history.pushState(state, "", hash);
+}
+
+function pathHistoryChain(path) {
+  const clean = String(path || "/").replace(/\/+$/, "") || "/";
+  const parts = clean.split("/");
+  const chain = ["/"];
+  let current = "";
+  for (let i = 1; i < parts.length; i++) {
+    if (!parts[i]) continue;
+    current += "/" + parts[i];
+    chain.push(current);
+  }
+  return chain;
+}
+
+function seedHistoryPath(path) {
+  if (!window.history || !history.pushState || !history.replaceState) return;
+  const chain = pathHistoryChain(path);
+  for (let i = 0; i < chain.length; i++) {
+    writeHistoryPath(chain[i], i === 0);
+  }
+}
+
+function historyBlocked() {
+  return Boolean(busy || loadingPath || pendingAbortController ||
+    pendingOverlayText || taskOverlayTimer || !overlayEl.hidden ||
+    !contentLoadingEl.hidden || contentEl.classList.contains("loading") ||
+    !textEditorOverlayEl.hidden || !imagePreviewOverlayEl.hidden);
+}
+
 function savePath(path) {
   try {
     localStorage.setItem(LAST_PATH_KEY, path || "/");
@@ -1162,7 +1210,11 @@ function actionParentDirectory(event) {
     event.stopPropagation();
   }
   if (busy || loadingPath || cwd === "/") return;
-  load(parentPath(cwd), undefined, false, true);
+  if (window.history && history.back && historyPath() === cwd) {
+    history.back();
+  } else {
+    load(parentPath(cwd), undefined, false, true, "push");
+  }
 }
 
 function cell(text) {
@@ -1178,7 +1230,7 @@ function classCell(className, text) {
   return td;
 }
 
-async function load(path, scrollTop, force, alertOnError) {
+async function load(path, scrollTop, force, alertOnError, historyMode) {
   const shouldScrollTop = scrollTop !== false;
   if ((busy && !force) || loadingPath) return;
   loadingPath = path;
@@ -1193,6 +1245,7 @@ async function load(path, scrollTop, force, alertOnError) {
     cwd = data.path;
     renderAddressPath();
     savePath(cwd);
+    if (historyMode) writeHistoryPath(cwd, historyMode === "replace");
     refreshSpaces();
     entries = data.entries.sort(compareEntries);
     selected.clear();
@@ -1209,6 +1262,12 @@ async function load(path, scrollTop, force, alertOnError) {
     loadingPath = null;
     hideContentLoading();
   }
+}
+
+async function loadAndReveal(path, scrollTop, force, alertOnError, historyMode, revealPath) {
+  const ok = await load(path, scrollTop, force, alertOnError, historyMode);
+  if (ok && revealPath) revealPathInList(revealPath);
+  return ok;
 }
 
 async function runAction(label, fn, options) {
@@ -1840,6 +1899,18 @@ textEditorSaveBtn.addEventListener("click", saveTextEditor);
 newTextBtn.addEventListener("click", actionNewText);
 imagePreviewCloseBtn.addEventListener("click", closeImagePreview);
 window.addEventListener("resize", renderAddressPath);
+window.addEventListener("popstate", event => {
+  if (historyBlocked()) {
+    writeHistoryPath(cwd, false);
+    setStatus(t("activeTask"));
+    return;
+  }
+  const path = event.state && event.state.path ? event.state.path : historyPath();
+  if (path && path !== cwd) {
+    const revealPath = parentPath(cwd) === path ? cwd : "";
+    loadAndReveal(path, false, false, true, null, revealPath);
+  }
+});
 document.addEventListener("click", event => {
   if (!uploadMenuEl || uploadMenuEl.contains(event.target)) return;
   uploadMenuEl.classList.remove("open");
@@ -1894,8 +1965,8 @@ filesEl.addEventListener("click", event => {
   if (item.type === "parent" || item.type === "d") {
     const revealPath = item.type === "parent" ? cwd : "";
     setTimeout(async () => {
-      if (await load(item.path, item.type === "parent" ? false : undefined, false, true)) {
-        /* if (revealPath) revealPathInList(revealPath); */
+      if (await load(item.path, item.type === "parent" ? false : undefined, false, true, "push")) {
+        if (revealPath) revealPathInList(revealPath);
       } else await load(cwd, false, true);
     }, 0);
   }
@@ -1938,7 +2009,7 @@ async function init() {
   applyStaticText();
   readSavedSort();
   updateSortHeaders();
-  const savedPath = readSavedPath();
+  const savedPath = historyPath() || readSavedPath();
   cwd = savedPath;
   renderAddressPath();
   taskRefreshPath = savedPath;
@@ -1948,7 +2019,11 @@ async function init() {
     setStatus(t("activeTask"));
     return;
   }
-  if (!(await load(savedPath || "/")) && savedPath !== "/") await load("/");
+  if (await load(savedPath || "/", undefined, false, false)) {
+    seedHistoryPath(cwd);
+  } else if (savedPath !== "/" && await load("/", undefined, false, false)) {
+    seedHistoryPath(cwd);
+  }
 }
 
 init();
