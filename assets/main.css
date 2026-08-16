@@ -110,12 +110,47 @@ body {
   text-align: right;
 }
 
-.space-item {
+.space-info .space-item {
   flex: 0 0 auto;
+  display: inline-flex;
+  height: auto;
+  min-height: 0;
+  min-width: 0;
   margin-left: 14px;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  text-align: right;
+  cursor: pointer;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.space-info .space-item:hover:not(:disabled),
+.space-info .space-item:focus:not(:disabled) {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.1);
+  outline: none;
+}
+
+.space-info .space-item:focus-visible {
+  box-shadow: 0 0 0 2px #87bfff;
+}
+
+.space-info .space-item:active {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.space-info .space-item:disabled {
+  opacity: 1;
+  color: inherit;
+  cursor: default;
+  pointer-events: none;
 }
 
 .space-prefix {
@@ -123,7 +158,7 @@ body {
   flex: 0 0 auto;
 }
 
-.space-item.current {
+.space-info .space-item.current {
   color: #f2f5f7;
   font-weight: 700;
 }

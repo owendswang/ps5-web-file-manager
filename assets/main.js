@@ -29,7 +29,7 @@ let downloadFrame = null;
 let uploadXhr = null;
 let L = {};
 
-const APP_VERSION = "v1.4";
+const APP_VERSION = "v1.5";
 const LAST_PATH_KEY = "ps5-web-file-mgr:last-path";
 const SORT_KEY = "ps5-web-file-mgr:list-sort";
 const LOADING_DISPLAY_DELAY = 250;
@@ -604,19 +604,31 @@ async function refreshSpaces() {
       spaceInfoEl.appendChild(prefix);
     }
     for (const item of data.spaces || []) {
-      const span = document.createElement("span");
-      span.className = "space-item" + (item.current ? " current" : "");
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "space-item" + (item.current ? " current" : "");
       const label = item.label_key ? t(item.label_key) : item.label;
-      span.textContent = label + ": " +
+      button.textContent = label + ": " +
         formatBytes(item.free, false) + "/" + formatBytes(item.total, false);
-      span.title = item.path + " " + span.textContent;
-      spaceInfoEl.appendChild(span);
+      button.title = item.path + " " + button.textContent;
+      if (item.current) button.setAttribute("aria-current", "location");
+      button.disabled = spaceNavigationLocked();
+      bindPress(button, () => {
+        if (!item.path || spaceNavigationLocked()) return;
+        load(item.path, undefined, false, true, "push");
+      });
+      spaceInfoEl.appendChild(button);
     }
     renderAddressPath();
   } catch (err) {
     spaceInfoEl.textContent = "";
     renderAddressPath();
   }
+}
+
+function spaceNavigationLocked() {
+  return Boolean(busy || loadingPath || !contentLoadingEl.hidden ||
+    contentEl.classList.contains("loading"));
 }
 
 function updateSpecialStoragePaths(spaces) {
@@ -985,6 +997,9 @@ function singleSelected() {
 function updateButtons() {
   const items = selectedEntries();
   const locked = busy || contentEl.classList.contains("loading");
+  for (const button of spaceInfoEl.querySelectorAll(".space-item")) {
+    button.disabled = spaceNavigationLocked();
+  }
   document.getElementById("copyBtn").disabled = locked || items.length === 0;
   document.getElementById("moveBtn").disabled = locked || items.length === 0;
   document.getElementById("renameBtn").disabled = locked || items.length !== 1;
@@ -1234,6 +1249,7 @@ async function load(path, scrollTop, force, alertOnError, historyMode) {
   const shouldScrollTop = scrollTop !== false;
   if ((busy && !force) || loadingPath) return;
   loadingPath = path;
+  updateButtons();
   startContentLoadingTimer();
   try {
     setStatus(t("readDir"));
