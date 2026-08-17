@@ -14,9 +14,13 @@
 #include "json_util.h"
 #include "path_util.h"
 
+#define UPLOAD_BUFFER_SIZE (1024 * 1024)
+
 typedef struct upload_context {
   file_task_t *task;
   int fd;
+  char *buffer;
+  size_t buffered;
   char temp[PATH_MAX];
   char target[PATH_MAX];
   unsigned long long expected;
@@ -25,6 +29,35 @@ typedef struct upload_context {
   int error;
   int task_done;
 } upload_context_t;
+
+static int
+upload_flush(upload_context_t *ctx) {
+  size_t written = 0;
+
+  while(written < ctx->buffered) {
+    ssize_t n;
+
+    if(ctx->task && task_cancel_requested(ctx->task)) {
+      ctx->failed = 1;
+      ctx->error = ECANCELED;
+      return -1;
+    }
+    n = write(ctx->fd, ctx->buffer + written, ctx->buffered - written);
+    if(n <= 0) {
+      ctx->failed = 1;
+      ctx->error = errno ? errno : EIO;
+      return -1;
+    }
+    written += (size_t)n;
+    ctx->written += (unsigned long long)n;
+  }
+  if(ctx->task && written) {
+    task_update(ctx->task, TASK_RUNNING, ctx->target,
+                (unsigned long long)written, NULL);
+  }
+  ctx->buffered = 0;
+  return 0;
+}
 
 static void
 finish_upload_task(file_task_t *task, task_state_t state, const char *current,
@@ -331,6 +364,11 @@ filemgr_upload_begin(struct MHD_Connection *conn, void **upload_ctx) {
     ctx->error = errno;
     goto fail;
   }
+  if(!(ctx->buffer = malloc(UPLOAD_BUFFER_SIZE))) {
+    ctx->failed = 1;
+    ctx->error = ENOMEM;
+    goto fail;
+  }
 
 fail:
   free_paths(checked_dirs, checked_dir_count);
@@ -359,7 +397,6 @@ fail:
 int
 filemgr_upload_data(void *upload_ctx, const char *data, size_t size) {
   upload_context_t *ctx = upload_ctx;
-  size_t written = 0;
 
   if(!ctx || ctx->failed) {
     return -1;
@@ -369,18 +406,16 @@ filemgr_upload_data(void *upload_ctx, const char *data, size_t size) {
     ctx->error = ECANCELED;
     return -1;
   }
-  while(written < size) {
-    ssize_t n = write(ctx->fd, data + written, size - written);
-    if(n <= 0) {
-      ctx->failed = 1;
-      ctx->error = errno ? errno : EIO;
+  while(size) {
+    size_t space = UPLOAD_BUFFER_SIZE - ctx->buffered;
+    size_t take = size < space ? size : space;
+
+    memcpy(ctx->buffer + ctx->buffered, data, take);
+    ctx->buffered += take;
+    data += take;
+    size -= take;
+    if(ctx->buffered == UPLOAD_BUFFER_SIZE && upload_flush(ctx)) {
       return -1;
-    }
-    written += (size_t)n;
-    ctx->written += (unsigned long long)n;
-    if(ctx->task) {
-      task_update(ctx->task, TASK_RUNNING, ctx->target,
-                  (unsigned long long)n, NULL);
     }
   }
   return 0;
@@ -408,6 +443,10 @@ filemgr_upload_finish(struct MHD_Connection *conn, void *upload_ctx) {
                            errno == ECANCELED ? MHD_HTTP_CONFLICT :
                            errno == ENOSPC ? MHD_HTTP_INSUFFICIENT_STORAGE :
                            MHD_HTTP_INTERNAL_SERVER_ERROR, NULL);
+  }
+  if(ctx->buffered && upload_flush(ctx)) {
+    ctx->error = ctx->error ? ctx->error : EIO;
+    goto done;
   }
   if(ctx->expected && ctx->written != ctx->expected) {
     ctx->error = EIO;
@@ -476,5 +515,6 @@ filemgr_upload_free(void *upload_ctx) {
       ctx->task_done = 1;
     }
   }
+  free(ctx->buffer);
   free(ctx);
 }

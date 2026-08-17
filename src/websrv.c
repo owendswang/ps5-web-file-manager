@@ -6,6 +6,7 @@
 #include <arpa/inet.h>
 #include <microhttpd.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -14,9 +15,23 @@
 #include "websrv.h"
 
 #define REQUEST_BODY_MAX (4 * 1024 * 1024)
+#define HTTP_CONNECTION_MEMORY_LIMIT (8 * 1024 * 1024)
+#define HTTP_CONNECTION_MEMORY_INCREMENT (2 * 1024 * 1024)
+#define HTTP_SOCKET_RCVBUF_SIZE (4 * 1024 * 1024)
+#define HTTP_SOCKET_SNDBUF_SIZE (4 * 1024 * 1024)
 
 static volatile sig_atomic_t g_stop_requested;
 static int g_listen_fd = -1;
+
+static void
+websrv_tune_connection_socket(int fd) {
+  const int sndbuf = HTTP_SOCKET_SNDBUF_SIZE;
+  const int nodelay = 1;
+
+  /* OrbisOS HTTP sockets need an explicit send buffer to fill a GbE link. */
+  (void)setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
+  (void)setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
+}
 
 typedef struct request_context {
   char *body;
@@ -190,6 +205,12 @@ websrv_listen(unsigned short port) {
     close(srvfd);
     return -1;
   }
+  {
+    const int rcvbuf = HTTP_SOCKET_RCVBUF_SIZE;
+
+    /* Set before listen so accepted PS5 sockets inherit the larger window. */
+    (void)setsockopt(srvfd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+  }
 
   memset(&server_addr, 0, sizeof(server_addr));
   server_addr.sin_family = AF_INET;
@@ -211,8 +232,12 @@ websrv_listen(unsigned short port) {
 
   if(!(httpd = MHD_start_daemon(MHD_USE_THREAD_PER_CONNECTION | MHD_USE_ITC |
                                 MHD_USE_NO_LISTEN_SOCKET | MHD_USE_DEBUG |
-                                MHD_USE_INTERNAL_POLLING_THREAD,
+                                MHD_USE_INTERNAL_POLLING_THREAD | MHD_USE_TURBO,
                                 0, NULL, NULL, &websrv_on_request, NULL,
+                                MHD_OPTION_CONNECTION_MEMORY_LIMIT,
+                                (size_t)HTTP_CONNECTION_MEMORY_LIMIT,
+                                MHD_OPTION_CONNECTION_MEMORY_INCREMENT,
+                                (size_t)HTTP_CONNECTION_MEMORY_INCREMENT,
                                 MHD_OPTION_NOTIFY_COMPLETED,
                                 &websrv_on_completed, NULL, MHD_OPTION_END))) {
     perror("MHD_start_daemon");
@@ -226,6 +251,7 @@ websrv_listen(unsigned short port) {
       if(!g_stop_requested) perror("accept");
       break;
     }
+    websrv_tune_connection_socket(connfd);
     if(MHD_add_connection(httpd, connfd, (struct sockaddr *)&client_addr,
                           addr_len) != MHD_YES) {
       perror("MHD_add_connection");
