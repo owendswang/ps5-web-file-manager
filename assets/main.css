@@ -588,6 +588,22 @@ th.size-col {
   text-align: center;
 }
 
+td.mode-col {
+  padding: 0;
+}
+
+.mode-action {
+  width: 100%;
+  min-width: 0;
+  height: 78px;
+  min-height: 78px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
 .select-cell {
   padding: 0;
   text-align: center;
@@ -800,6 +816,162 @@ input[type="checkbox"] {
 .image-preview-panel > button {
   width: 100%;
   margin-top: 14px;
+}
+
+.permission-overlay {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 9500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 48px;
+  background: rgba(4, 6, 8, .9);
+}
+
+.permission-panel {
+  width: 620px;
+  max-width: calc(100vw - 96px);
+  padding: 28px;
+  border: 1px solid #46515f;
+  border-radius: 10px;
+  background: #15191e;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, .45);
+}
+
+.permission-title {
+  margin: 0;
+  color: #edf0f2;
+  font-size: 26px;
+  font-weight: 600;
+}
+
+.permission-path {
+  display: flex;
+  margin: 10px 0 22px;
+  color: #9ba7b2;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 17px;
+  white-space: nowrap;
+}
+
+.permission-path-names {
+  min-width: 0;
+  flex: 1 1 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.permission-path-count {
+  flex: 0 0 auto;
+  margin-left: 8px;
+}
+
+.permission-grid {
+  padding: 12px 0;
+  border-top: 1px solid #2d343d;
+  border-bottom: 1px solid #2d343d;
+}
+
+.permission-row {
+  display: flex;
+  min-height: 50px;
+  align-items: center;
+}
+
+.permission-row > * {
+  width: 96px;
+  flex: 0 0 96px;
+  text-align: center;
+}
+
+.permission-row .permission-scope {
+  width: auto;
+  min-width: 0;
+  flex: 1 1 auto;
+  color: #c9d3dc;
+  text-align: left;
+}
+
+.permission-head {
+  min-height: 28px;
+  color: #7f8a94;
+  font-size: 16px;
+}
+
+.permission-row label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.permission-row label input {
+  width: 30px;
+  height: 30px;
+  margin: 0 8px 0 0;
+}
+
+.permission-octal {
+  display: flex;
+  align-items: center;
+  margin: 22px 0;
+  color: #c9d3dc;
+}
+
+.permission-octal span {
+  flex: 1 1 auto;
+}
+
+.permission-octal input {
+  width: 150px;
+  height: 50px;
+  padding: 0 14px;
+  border: 1px solid #46515f;
+  border-radius: 6px;
+  outline: none;
+  background: #0f1215;
+  color: #edf0f2;
+  font: 22px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  text-align: center;
+}
+
+.permission-octal input:focus {
+  border-color: #6fb1ff;
+  outline: 3px solid rgba(111, 177, 255, .25);
+}
+
+.permission-octal input:invalid {
+  border-color: #b86262;
+}
+
+.permission-recursive {
+  min-height: 46px;
+  display: flex;
+  align-items: center;
+  margin: -8px 0 18px;
+  color: #c9d3dc;
+  cursor: pointer;
+}
+
+.permission-recursive input {
+  flex: 0 0 auto;
+  margin: 0 12px 0 0;
+}
+
+.permission-actions {
+  display: flex;
+}
+
+.permission-actions button {
+  flex: 1 1 0;
+}
+
+.permission-actions button + button {
+  margin-left: 14px;
 }
 
 .task-overlay {
@@ -1107,9 +1279,19 @@ input[type="checkbox"] {
   .name-head,
   .parent-nav-button,
   .select-hit,
-  .row-action {
+  .row-action,
+  .mode-action {
     height: 56px;
     min-height: 56px;
+  }
+
+  .permission-overlay {
+    padding: 18px;
+  }
+
+  .permission-panel {
+    max-width: calc(100vw - 36px);
+    padding: 18px;
   }
 
   .parent-nav-button {

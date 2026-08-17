@@ -25,11 +25,14 @@ let textEditorPath = null;
 let textEditorVersion = null;
 let textEditorOriginal = "";
 let textEditorBusy = false;
+let permissionItems = [];
+let permissionOriginal = "";
+let permissionBusy = false;
 let downloadFrame = null;
 let uploadXhr = null;
 let L = {};
 
-const APP_VERSION = "v1.5";
+const APP_VERSION = "v1.6";
 const LAST_PATH_KEY = "ps5-web-file-mgr:last-path";
 const SORT_KEY = "ps5-web-file-mgr:list-sort";
 const LOADING_DISPLAY_DELAY = 250;
@@ -80,6 +83,24 @@ const imagePreviewOverlayEl = document.getElementById("imagePreviewOverlay");
 const imagePreviewNameEl = document.getElementById("imagePreviewName");
 const imagePreviewEl = document.getElementById("imagePreview");
 const imagePreviewCloseBtn = document.getElementById("imagePreviewCloseBtn");
+const permissionOverlayEl = document.getElementById("permissionOverlay");
+const permissionPathEl = document.getElementById("permissionPath");
+const permissionModeEl = document.getElementById("permissionMode");
+const permissionRecursiveOptionEl = document.getElementById("permissionRecursiveOption");
+const permissionRecursiveEl = document.getElementById("permissionRecursive");
+const permissionCancelBtn = document.getElementById("permissionCancelBtn");
+const permissionApplyBtn = document.getElementById("permissionApplyBtn");
+const permissionChecks = [
+  document.getElementById("permissionOwnerRead"),
+  document.getElementById("permissionOwnerWrite"),
+  document.getElementById("permissionOwnerExecute"),
+  document.getElementById("permissionGroupRead"),
+  document.getElementById("permissionGroupWrite"),
+  document.getElementById("permissionGroupExecute"),
+  document.getElementById("permissionOtherRead"),
+  document.getElementById("permissionOtherWrite"),
+  document.getElementById("permissionOtherExecute")
+];
 
 function chooseLanguage() {
   const langs = navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language || ""];
@@ -398,11 +419,11 @@ function taskElapsed(task) {
 }
 
 function opLabel(op) {
-  return { copy: t("copy"), move: t("move"), delete: t("delete"), download: t("download"), upload: t("upload") }[op] || op;
+  return { copy: t("copy"), move: t("move"), delete: t("delete"), chmod: t("permissionsTitle"), download: t("download"), upload: t("upload") }[op] || op;
 }
 
 function taskOpLabel(op) {
-  return { copy: t("copying"), move: t("moving"), delete: t("deleting"), download: t("downloading"), upload: t("uploading") }[op] || op;
+  return { copy: t("copying"), move: t("moving"), delete: t("deleting"), chmod: t("changingPermissions"), download: t("downloading"), upload: t("uploading") }[op] || op;
 }
 
 function isPlayStationBrowser() {
@@ -479,6 +500,12 @@ function setStatus(text) {
 
 function setBusy(value) {
   busy = value;
+  updateButtons();
+}
+
+function setModalBackgroundLocked(value) {
+  contentEl.classList.toggle("loading", value);
+  if (value) clearHoverPath();
   updateButtons();
 }
 
@@ -560,7 +587,8 @@ function historyBlocked() {
   return Boolean(busy || loadingPath || pendingAbortController ||
     pendingOverlayText || taskOverlayTimer || !overlayEl.hidden ||
     !contentLoadingEl.hidden || contentEl.classList.contains("loading") ||
-    !textEditorOverlayEl.hidden || !imagePreviewOverlayEl.hidden);
+    !textEditorOverlayEl.hidden || !imagePreviewOverlayEl.hidden ||
+    !permissionOverlayEl.hidden);
 }
 
 function savePath(path) {
@@ -734,6 +762,7 @@ async function actionInstallSelectedPkgs() {
 
 function openImagePreview(item) {
   if (busy) return;
+  setModalBackgroundLocked(true);
   imagePreviewNameEl.textContent = displayName(item);
   imagePreviewNameEl.title = displayName(item);
   imagePreviewEl.src = "/fs?path=" + encodeURIComponent(item.path);
@@ -746,6 +775,122 @@ function closeImagePreview() {
   imagePreviewNameEl.textContent = "";
   imagePreviewNameEl.title = "";
   imagePreviewEl.removeAttribute("src");
+  setModalBackgroundLocked(false);
+}
+
+function permissionModeText(mode) {
+  const octal = (Number(mode || 0) & 0x1ff).toString(8);
+  return "0" + ("000" + octal).slice(-3);
+}
+
+function validPermissionMode(value) {
+  return /^0[0-7]{3}$/.test(String(value || ""));
+}
+
+function syncPermissionChecks(value) {
+  if (!validPermissionMode(value)) return;
+  const mode = parseInt(value, 8);
+  const bits = [0x100, 0x080, 0x040, 0x020, 0x010, 0x008, 0x004, 0x002, 0x001];
+  for (let i = 0; i < permissionChecks.length; i++) {
+    permissionChecks[i].checked = Boolean(mode & bits[i]);
+  }
+}
+
+function syncPermissionMode() {
+  const bits = [0x100, 0x080, 0x040, 0x020, 0x010, 0x008, 0x004, 0x002, 0x001];
+  let mode = 0;
+  for (let i = 0; i < permissionChecks.length; i++) {
+    if (permissionChecks[i].checked) mode |= bits[i];
+  }
+  permissionModeEl.value = permissionModeText(mode);
+}
+
+function validatePermissionMode() {
+  if (validPermissionMode(permissionModeEl.value)) {
+    syncPermissionChecks(permissionModeEl.value);
+    return true;
+  }
+  alert(t("permissionInvalid"));
+  permissionModeEl.value = permissionModeText(permissionItems.length ? permissionItems[0].mode : 0);
+  syncPermissionChecks(permissionModeEl.value);
+  permissionModeEl.focus();
+  permissionModeEl.select();
+  return false;
+}
+
+function setPermissionBusy(value) {
+  permissionBusy = value;
+  permissionModeEl.disabled = value;
+  permissionRecursiveEl.disabled = value;
+  permissionCancelBtn.disabled = value;
+  permissionApplyBtn.disabled = value;
+  for (const checkbox of permissionChecks) checkbox.disabled = value;
+}
+
+function openPermissionDialog(item) {
+  if (busy || loadingPath || permissionBusy) return;
+  const items = selected.has(item.path) ? selectedEntries() : [item];
+  setModalBackgroundLocked(true);
+  permissionItems = items;
+  renderPermissionItems(items);
+  permissionModeEl.value = permissionModeText(item.mode);
+  permissionOriginal = permissionModeEl.value;
+  permissionRecursiveOptionEl.hidden = !items.some(entry => entry.type === "d");
+  permissionRecursiveEl.checked = true;
+  syncPermissionChecks(permissionModeEl.value);
+  setPermissionBusy(false);
+  permissionOverlayEl.hidden = false;
+  permissionModeEl.focus();
+  permissionModeEl.select();
+}
+
+function closePermissionDialog() {
+  if (permissionBusy) return;
+  permissionOverlayEl.hidden = true;
+  permissionItems = [];
+  permissionOriginal = "";
+  permissionPathEl.textContent = "";
+  permissionPathEl.title = "";
+  permissionRecursiveOptionEl.hidden = true;
+  setModalBackgroundLocked(false);
+}
+
+function requestClosePermissionDialog() {
+  if (permissionBusy) return;
+  if (validPermissionMode(permissionModeEl.value) &&
+      (permissionModeEl.value !== permissionOriginal ||
+       (!permissionRecursiveOptionEl.hidden && !permissionRecursiveEl.checked)) &&
+      !confirm(t("unsavedPermissionConfirm"))) return;
+  closePermissionDialog();
+}
+
+async function applyPermissionMode() {
+  if (permissionBusy || !permissionItems.length || !validatePermissionMode()) return;
+  const items = permissionItems.slice();
+  const mode = permissionModeEl.value;
+  setPermissionBusy(true);
+  setStatus(t("permissionChanging"));
+  taskRefreshPath = cwd;
+  try {
+    const data = await apiForm("/api/chmod", {
+      paths: items.map(item => item.path).join("\n"),
+      mode,
+      recursive: items.some(item => item.type === "d") && permissionRecursiveEl.checked ? "1" : "0"
+    });
+    setPermissionBusy(false);
+    closePermissionDialog();
+    setBusy(true);
+    trackTask(data.task_id, "chmod", false);
+    clearSelection(false);
+    setStatus(t("taskCreated", { label: t("permissionsTitle") }));
+    await pollTasks();
+  } catch (err) {
+    setPermissionBusy(false);
+    const message = t("permissionChangeFailed", { error: err.message });
+    setStatus(message);
+    alert(message);
+    permissionModeEl.focus();
+  }
 }
 
 function setTextEditorBusy(value, status) {
@@ -759,6 +904,7 @@ function setTextEditorBusy(value, status) {
 function closeTextEditor() {
   if (textEditorBusy) return;
   textEditorOverlayEl.hidden = true;
+  setModalBackgroundLocked(false);
   textEditorPath = null;
   textEditorVersion = null;
   textEditorOriginal = "";
@@ -775,6 +921,7 @@ function requestCloseTextEditor() {
 }
 
 function showTextEditor(item, text, version) {
+  setModalBackgroundLocked(true);
   textEditorPath = item.path;
   textEditorVersion = version;
   textEditorPathEl.textContent = displayPath(item.path);
@@ -788,6 +935,7 @@ function showTextEditor(item, text, version) {
 
 async function openTextEditor(item) {
   if (busy || textEditorBusy) return;
+  setModalBackgroundLocked(true);
   textEditorPath = item.path;
   textEditorVersion = null;
   textEditorOriginal = "";
@@ -802,6 +950,7 @@ async function openTextEditor(item) {
   } catch (err) {
     setTextEditorBusy(false, "");
     textEditorOverlayEl.hidden = true;
+    setModalBackgroundLocked(false);
     textEditorPath = null;
     const message = t("openTextFailed", { error: err.message });
     setStatus(message);
@@ -895,6 +1044,24 @@ function itemListTitle(items, limit) {
   if (items.length === 1) return displayName(items[0]);
   const shown = items.slice(0, limit).map(displayName).join(", ");
   return items.length > limit ? t("selectedItems", { name: shown, count: items.length }) : shown;
+}
+
+function renderPermissionItems(items) {
+  const names = items.length === 1 ? displayPath(items[0].path) :
+    items.map(displayName).join(", ");
+  const count = items.length > 1 ? t("permissionObjectCount", { count: items.length }) : "";
+  const namesEl = document.createElement("span");
+  namesEl.className = "permission-path-names";
+  namesEl.textContent = names;
+  permissionPathEl.innerHTML = "";
+  permissionPathEl.appendChild(namesEl);
+  if (count) {
+    const countEl = document.createElement("span");
+    countEl.className = "permission-path-count";
+    countEl.textContent = count;
+    permissionPathEl.appendChild(countEl);
+  }
+  permissionPathEl.title = count ? names + " " + count : names;
 }
 
 function compareText(a, b) {
@@ -1011,8 +1178,11 @@ function updateButtons() {
   uploadFolderBtn.disabled = locked;
   document.getElementById("mkdirBtn").disabled = locked;
   newTextBtn.disabled = locked;
+  for (const button of filesEl.querySelectorAll(".row-action, .mode-action")) button.disabled = locked;
+  for (const checkbox of filesEl.querySelectorAll(".select-cell input")) checkbox.disabled = locked;
   selectAllEl.disabled = locked;
-  parentBtn.disabled = cwd === "/";
+  parentBtn.disabled = locked || cwd === "/";
+  exitBtn.disabled = locked;
   selectAllEl.checked = entries.length > 0 && items.length === entries.length;
   selectAllEl.indeterminate = items.length > 0 && items.length < entries.length;
   renderInstallPkgButton(items, locked);
@@ -1197,6 +1367,25 @@ function render() {
     nameBtn.appendChild(nameText);
     nameTd.appendChild(nameBtn);
 
+    const modeTd = document.createElement("td");
+    modeTd.className = "mode-col";
+    if (!isParent) {
+      const modeBtn = document.createElement("button");
+      modeBtn.className = "mode-action";
+      modeBtn.type = "button";
+      modeBtn.textContent = permissionModeText(item.mode);
+      modeBtn.title = t("permissionChangeTitle", { name: displayName(item) });
+      modeBtn.setAttribute("aria-label", modeBtn.title);
+      modeBtn.disabled = busy || Boolean(loadingPath);
+      modeBtn.addEventListener("click", event => {
+        event.preventDefault();
+        event.stopPropagation();
+        focusPath(item.path);
+        openPermissionDialog(item);
+      });
+      modeTd.appendChild(modeBtn);
+    }
+
     appendChildren(
       tr,
       selectTd,
@@ -1204,7 +1393,7 @@ function render() {
       classCell("type-col", itemTypeLabel(item)),
       classCell("size-col", formatSize(item.size, item.type)),
       classCell("time-col", formatTime(item.mtime)),
-      classCell("mode-col", isParent ? "" : "0" + Number(item.mode).toString(8))
+      modeTd
     );
     fragment.appendChild(tr);
   }
@@ -1550,7 +1739,8 @@ function renderTasks(tasks) {
   const speed = Number(task.speed || 0);
   const isDelete = task.op === "delete";
   const isDownload = task.op === "download";
-  const isPreparing = (task.op === "copy" || task.op === "move") &&
+  const isChmod = task.op === "chmod";
+  const isPreparing = (task.op === "copy" || task.op === "move" || isChmod) &&
     task.state === "running" && done === 0;
   const isFinishing = !isDelete && !isDownload && task.state === "running" && total > 0 && done >= total;
   const pct = total > 0 ? Math.min(100, Math.floor(done * 100 / total)) : 0;
@@ -1579,9 +1769,11 @@ function renderTasks(tasks) {
   const meta = document.createElement("div");
   meta.className = "task-meta";
   const speedItem = document.createElement("div");
-  speedItem.textContent = t("speedLabel") + ": " + formatSpeed(speed);
+  speedItem.textContent = t("speedLabel") + ": " + (isChmod ?
+    t("itemsPerSecond", { count: Math.round(speed) }) : formatSpeed(speed));
   const progressItem = document.createElement("div");
-  progressItem.textContent = t("progressLabel") + ": " + formatSize(done) + " / " + formatSize(total);
+  progressItem.textContent = t("progressLabel") + ": " + (isChmod ?
+    t("permissionProgress", { done, total }) : formatSize(done) + " / " + formatSize(total));
   const etaItem = document.createElement("div");
   etaItem.textContent = t("etaLabel") + ": " + averageEta(task, done, total);
   appendChildren(meta, speedItem, progressItem, etaItem);
@@ -1914,10 +2106,25 @@ textEditorCloseBtn.addEventListener("click", requestCloseTextEditor);
 textEditorSaveBtn.addEventListener("click", saveTextEditor);
 newTextBtn.addEventListener("click", actionNewText);
 imagePreviewCloseBtn.addEventListener("click", closeImagePreview);
+permissionCancelBtn.addEventListener("click", requestClosePermissionDialog);
+permissionApplyBtn.addEventListener("click", applyPermissionMode);
+permissionModeEl.addEventListener("input", () => {
+  if (validPermissionMode(permissionModeEl.value)) syncPermissionChecks(permissionModeEl.value);
+});
+permissionModeEl.addEventListener("change", validatePermissionMode);
+for (const checkbox of permissionChecks) checkbox.addEventListener("change", syncPermissionMode);
 window.addEventListener("resize", renderAddressPath);
 window.addEventListener("popstate", event => {
   if (historyBlocked()) {
     writeHistoryPath(cwd, false);
+    if (!textEditorOverlayEl.hidden) {
+      requestCloseTextEditor();
+      return;
+    }
+    if (!permissionOverlayEl.hidden) {
+      requestClosePermissionDialog();
+      return;
+    }
     setStatus(t("activeTask"));
     return;
   }
@@ -1943,6 +2150,9 @@ textEditorOverlayEl.addEventListener("click", event => {
 });
 imagePreviewOverlayEl.addEventListener("click", event => {
   if (event.target === imagePreviewOverlayEl) closeImagePreview();
+});
+permissionOverlayEl.addEventListener("click", event => {
+  if (event.target === permissionOverlayEl) requestClosePermissionDialog();
 });
 contentEl.addEventListener("click", event => {
   if (!busy && !loadingPath) return;

@@ -22,6 +22,7 @@ PS5 web file manager payload. It runs an HTTP UI starting at port `8888`, instal
 
 - List files and folders.
 - Sort the list by name, type, size, modified time, or permissions. The selected sort mode is saved in browser local storage.
+- Change read/write/execute permissions from the permissions column, using checkboxes or a validated four-digit octal mode.
 - Copy, move, delete, rename, create files, and create folders.
 - Edit UTF-8 text files up to 1 MiB using the built-in plain text editor.
 - Multi-select operations.

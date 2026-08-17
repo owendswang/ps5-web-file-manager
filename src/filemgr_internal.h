@@ -13,6 +13,7 @@ typedef enum task_op {
   TASK_COPY,
   TASK_MOVE,
   TASK_DELETE,
+  TASK_CHMOD,
   TASK_DOWNLOAD,
   TASK_UPLOAD,
 } task_op_t;
@@ -44,6 +45,8 @@ typedef struct file_task {
   size_t src_count;
   size_t file_count;
   size_t dir_count;
+  unsigned int chmod_mode;
+  int recursive;
   unsigned long long total;
   unsigned long long done;
   unsigned long long speed;
@@ -88,6 +91,7 @@ enum MHD_Result send_buffer(struct MHD_Connection *conn, unsigned int status,
                             char *data, const char *mime);
 
 int ensure_parent_dirs(const char *base, const char *rel);
+int chmod_path_mode(const char *path, unsigned int mode);
 int chmod_path_0777(const char *path);
 int fchmod_0777(int fd);
 int ignore_chmod_error(int err);

@@ -123,6 +123,50 @@
     </section>
   </div>
 
+  <div id="permissionOverlay" class="permission-overlay" hidden>
+    <section class="permission-panel" role="dialog" aria-modal="true" aria-labelledby="permissionTitle">
+      <h2 id="permissionTitle" class="permission-title" data-i18n="permissionsTitle"></h2>
+      <div id="permissionPath" class="permission-path"></div>
+      <div class="permission-grid">
+        <div class="permission-row permission-head" aria-hidden="true">
+          <span class="permission-scope"></span>
+          <span>R</span><span>W</span><span>X</span>
+        </div>
+        <div class="permission-row">
+          <span class="permission-scope" data-i18n="permissionOwner"></span>
+          <label><input id="permissionOwnerRead" type="checkbox"><span>R</span></label>
+          <label><input id="permissionOwnerWrite" type="checkbox"><span>W</span></label>
+          <label><input id="permissionOwnerExecute" type="checkbox"><span>X</span></label>
+        </div>
+        <div class="permission-row">
+          <span class="permission-scope" data-i18n="permissionGroup"></span>
+          <label><input id="permissionGroupRead" type="checkbox"><span>R</span></label>
+          <label><input id="permissionGroupWrite" type="checkbox"><span>W</span></label>
+          <label><input id="permissionGroupExecute" type="checkbox"><span>X</span></label>
+        </div>
+        <div class="permission-row">
+          <span class="permission-scope" data-i18n="permissionOther"></span>
+          <label><input id="permissionOtherRead" type="checkbox"><span>R</span></label>
+          <label><input id="permissionOtherWrite" type="checkbox"><span>W</span></label>
+          <label><input id="permissionOtherExecute" type="checkbox"><span>X</span></label>
+        </div>
+      </div>
+      <label class="permission-octal">
+        <span data-i18n="permissionOctal"></span>
+        <input id="permissionMode" type="text" inputmode="numeric" pattern="0[0-7]{3}"
+               minlength="4" maxlength="4" autocomplete="off" spellcheck="false">
+      </label>
+      <label id="permissionRecursiveOption" class="permission-recursive" hidden>
+        <input id="permissionRecursive" type="checkbox" checked>
+        <span data-i18n="permissionRecursive"></span>
+      </label>
+      <div class="permission-actions">
+        <button id="permissionCancelBtn" class="secondary" data-i18n="close"></button>
+        <button id="permissionApplyBtn" class="primary" data-i18n="apply"></button>
+      </div>
+    </section>
+  </div>
+
   <div id="taskOverlay" class="task-overlay" hidden>
     <div class="task-panel">
       <div id="tasks" class="tasks"></div>

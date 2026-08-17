@@ -66,6 +66,21 @@ fd_has_unix_modes(int fd) {
 }
 
 int
+chmod_path_mode(const char *path, unsigned int mode) {
+  if(!path_has_unix_modes(path)) {
+    return 0;
+  }
+  if(chmod(path, (mode_t)(mode & 0777))) {
+    /* A filesystem that does not implement Unix modes is compatible with the
+       paste behavior. Real permission and read-only errors must reach the UI. */
+    if(errno != ENOTSUP && errno != EINVAL) {
+      return -1;
+    }
+  }
+  return 0;
+}
+
+int
 chmod_path_0777(const char *path) {
   if(!path_has_unix_modes(path)) {
     return 0;

@@ -255,6 +255,8 @@ send_json_error_detail(struct MHD_Connection *conn, unsigned int status,
 
 static int task_target_path(file_task_t *task, const char *src,
                             char *out, size_t size);
+static int chmod_task_path(file_task_t *task, const char *path,
+                           unsigned int mode, int recursive);
 
 static int count_path_bytes_sync(file_task_t *task, const char *path,
                                  const char *display,
@@ -1679,6 +1681,37 @@ task_worker(void *arg) {
     for(i = 0; i < task->src_count && !ret; i++) {
       ret = remove_path(task, task->srcs[i]);
     }
+  } else if(task->op == TASK_CHMOD) {
+    unsigned long long ignored_bytes = 0;
+    size_t i;
+
+    ret = 0;
+    if(task->recursive) {
+      for(i = 0; i < task->src_count; i++) {
+        size_t files_before = task->file_count;
+        size_t dirs_before = task->dir_count;
+
+        if(count_task_path_bytes(task, task->srcs[i], task->srcs[i],
+                                 &ignored_bytes, &task->file_count,
+                                 &task->dir_count)) {
+          ret = -1;
+          break;
+        }
+        if(files_before == task->file_count && dirs_before == task->dir_count) {
+          task->file_count++;
+        }
+      }
+      total = task->file_count + task->dir_count;
+    } else {
+      total = task->src_count;
+    }
+    if(!ret) {
+      task_set_total(task, total);
+      for(i = 0; i < task->src_count && !ret; i++) {
+        ret = chmod_task_path(task, task->srcs[i], task->chmod_mode,
+                              task->recursive);
+      }
+    }
   }
 
   if(ret) {
@@ -1686,6 +1719,10 @@ task_worker(void *arg) {
       task_update(task, TASK_CANCELED, task->current[0] ? task->current : task->src,
                   0, "canceled");
     } else {
+      if(task->op == TASK_CHMOD) {
+        task_set_error_code(task, "chmod_failed",
+                            task->current[0] ? task->current : task->src);
+      }
       task_update(task, TASK_FAILED, task->current[0] ? task->current : task->src,
                   0, strerror(errno));
     }
@@ -1706,8 +1743,8 @@ task_worker(void *arg) {
 
 static enum MHD_Result
 create_task_response(struct MHD_Connection *conn, task_op_t op,
-                     char **srcs, size_t src_count,
-                     const char *dst, int overwrite) {
+                     char **srcs, size_t src_count, const char *dst,
+                     int overwrite, unsigned int chmod_mode, int recursive) {
   file_task_t *task = calloc(1, sizeof(file_task_t));
   strbuf_t b = {0};
   struct stat st;
@@ -1745,6 +1782,8 @@ create_task_response(struct MHD_Connection *conn, task_op_t op,
 
   task->op = op;
   task->state = TASK_QUEUED;
+  task->chmod_mode = chmod_mode;
+  task->recursive = recursive;
   task->srcs = srcs;
   task->src_count = src_count;
   snprintf(task->src, sizeof(task->src), "%s%s",
@@ -1907,7 +1946,7 @@ api_copy(struct MHD_Connection *conn, const char *body, size_t body_size) {
     }
   }
   ret = create_task_response(conn, TASK_COPY, paths, count, dst,
-                             overwrite && !strcmp(overwrite, "1"));
+                             overwrite && !strcmp(overwrite, "1"), 0, 0);
   free(paths_raw); free(dst); free(overwrite);
   return ret;
 }
@@ -1926,7 +1965,7 @@ api_move(struct MHD_Connection *conn, const char *body, size_t body_size) {
     return send_json_error(conn, MHD_HTTP_BAD_REQUEST, NULL);
   }
   ret = create_task_response(conn, TASK_MOVE, paths, count, dst,
-                             overwrite && !strcmp(overwrite, "1"));
+                             overwrite && !strcmp(overwrite, "1"), 0, 0);
   free(paths_raw); free(dst); free(overwrite);
   return ret;
 }
@@ -1948,7 +1987,7 @@ api_delete(struct MHD_Connection *conn, const char *body, size_t body_size) {
       return send_json_error(conn, MHD_HTTP_BAD_REQUEST, "invalid path");
     }
   }
-  ret = create_task_response(conn, TASK_DELETE, paths, count, NULL, 0);
+  ret = create_task_response(conn, TASK_DELETE, paths, count, NULL, 0, 0, 0);
   free(paths_raw);
   return ret;
 }
@@ -2009,6 +2048,104 @@ api_mkdir(struct MHD_Connection *conn) {
              : send_json_ok(conn);
 }
 
+static int
+parse_permission_mode(const char *text, unsigned int *mode) {
+  size_t i;
+
+  if(!text || strlen(text) != 4 || text[0] != '0') {
+    return -1;
+  }
+  for(i = 1; i < 4; i++) {
+    if(text[i] < '0' || text[i] > '7') {
+      return -1;
+    }
+  }
+  *mode = (unsigned int)((text[1] - '0') << 6) |
+          (unsigned int)((text[2] - '0') << 3) |
+          (unsigned int)(text[3] - '0');
+  return 0;
+}
+
+static int
+chmod_task_path(file_task_t *task, const char *path,
+                unsigned int mode, int recursive) {
+  struct stat st;
+
+  if(task_cancel_requested(task)) {
+    return -1;
+  }
+  task_update(task, TASK_RUNNING, path, 0, NULL);
+  if(lstat(path, &st)) {
+    return -1;
+  }
+  if(recursive && S_ISDIR(st.st_mode)) {
+    DIR *dir = opendir(path);
+    struct dirent *entry;
+
+    if(!dir) {
+      return -1;
+    }
+    while((entry = readdir(dir))) {
+      char child[PATH_MAX];
+      int error;
+
+      if(!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+        continue;
+      }
+      if(task_cancel_requested(task) ||
+         path_join(child, sizeof(child), path, entry->d_name) ||
+         lstat(child, &st)) {
+        error = errno;
+        closedir(dir);
+        errno = error;
+        return -1;
+      }
+      /* A symlink has no portable mode of its own; never change its target. */
+      if(!S_ISLNK(st.st_mode) && chmod_task_path(task, child, mode, 1)) {
+        error = errno;
+        closedir(dir);
+        errno = error;
+        return -1;
+      }
+    }
+    closedir(dir);
+  }
+  task_update(task, TASK_RUNNING, path, 0, NULL);
+  if(chmod_path_mode(path, mode)) {
+    return -1;
+  }
+  task_update(task, TASK_RUNNING, path, 1, NULL);
+  return 0;
+}
+
+static enum MHD_Result
+api_chmod(struct MHD_Connection *conn, const char *body, size_t body_size) {
+  char *paths_raw = body_form_value(body, body_size, "paths");
+  char *mode_text = body_form_value(body, body_size, "mode");
+  char *recursive_text = body_form_value(body, body_size, "recursive");
+  char **paths = NULL;
+  size_t count = 0;
+  unsigned int mode;
+  enum MHD_Result ret;
+
+  if(!paths_raw || parse_paths(paths_raw, &paths, &count)) {
+    free(paths_raw); free(mode_text); free(recursive_text);
+    free_paths(paths, count);
+    return send_json_error(conn, MHD_HTTP_BAD_REQUEST, "invalid path");
+  }
+  if(parse_permission_mode(mode_text, &mode)) {
+    free(paths_raw); free(mode_text); free(recursive_text);
+    free_paths(paths, count);
+    return send_json_error_detail(conn, MHD_HTTP_BAD_REQUEST,
+                                  "invalid permission mode",
+                                  "invalid_mode", NULL);
+  }
+  ret = create_task_response(conn, TASK_CHMOD, paths, count, NULL, 0, mode,
+                             recursive_text && !strcmp(recursive_text, "1"));
+  free(paths_raw); free(mode_text); free(recursive_text);
+  return ret;
+}
+
 static enum MHD_Result
 api_install_pkg(struct MHD_Connection *conn) {
   char *path = fs_path_value(query_value(conn, "path"));
@@ -2066,6 +2203,11 @@ filemgr_api_request(struct MHD_Connection *conn, const char *url,
   if(!strcmp(url, "/api/upload/finish")) return api_upload_finish(conn);
   if(!strcmp(url, "/api/rename")) return api_rename(conn);
   if(!strcmp(url, "/api/mkdir")) return api_mkdir(conn);
+  if(!strcmp(url, "/api/chmod")) {
+    return strcmp(method, MHD_HTTP_METHOD_POST) ?
+      send_json_error(conn, MHD_HTTP_METHOD_NOT_ALLOWED, "invalid method") :
+      api_chmod(conn, body, body_size);
+  }
   if(!strcmp(url, "/api/install-pkg")) {
     return strcmp(method, MHD_HTTP_METHOD_POST) ?
       send_json_error(conn, MHD_HTTP_METHOD_NOT_ALLOWED, "invalid method") :

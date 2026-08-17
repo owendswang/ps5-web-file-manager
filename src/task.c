@@ -20,6 +20,7 @@ task_op_name(task_op_t op) {
   case TASK_COPY: return "copy";
   case TASK_MOVE: return "move";
   case TASK_DELETE: return "delete";
+  case TASK_CHMOD: return "chmod";
   case TASK_DOWNLOAD: return "download";
   case TASK_UPLOAD: return "upload";
   default: return "unknown";
