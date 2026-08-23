@@ -1853,8 +1853,9 @@ api_tasks(struct MHD_Connection *conn) {
     json_escape(&b, task->error_code);
     strbuf_append(&b, ",\"error_arg\":");
     json_escape(&b, task->error_arg);
-    strbuf_printf(&b, ",\"src_count\":%zu,\"total\":%llu,\"done\":%llu,\"speed\":%llu,\"eta\":%llu,\"cancel_requested\":%s,\"created_at\":%lld,\"elapsed\":%lld,\"total_elapsed\":%lld,\"updated_at\":%lld}",
-                  task->src_count, task->total, task->done, task->speed, task->eta,
+    strbuf_printf(&b, ",\"src_count\":%zu,\"completed_count\":%zu,\"total\":%llu,\"done\":%llu,\"speed\":%llu,\"eta\":%llu,\"cancel_requested\":%s,\"created_at\":%lld,\"elapsed\":%lld,\"total_elapsed\":%lld,\"updated_at\":%lld}",
+                  task->src_count, task->upload_completed,
+                  task->total, task->done, task->speed, task->eta,
                   task->cancel_requested ? "true" : "false",
                   (long long)task->created_at,
                   task->transfer_started_at ? (long long)(now - task->transfer_started_at) : 0LL,

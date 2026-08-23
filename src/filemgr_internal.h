@@ -45,6 +45,7 @@ typedef struct file_task {
   size_t src_count;
   size_t file_count;
   size_t dir_count;
+  size_t upload_completed;
   unsigned int chmod_mode;
   int recursive;
   unsigned long long total;
@@ -57,6 +58,7 @@ typedef struct file_task {
   unsigned int eta_sample_next;
   unsigned int eta_sample_count;
   int cancel_requested;
+  unsigned int active_streams;
   time_t created_at;
   time_t transfer_started_at;
   time_t updated_at;

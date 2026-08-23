@@ -4,6 +4,7 @@
 
 #include <limits.h>
 #include <pthread.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -14,7 +15,12 @@ typedef struct pkg_metadata {
   const char *content_id;
   const char *content_name;
   const char *icon_url;
+  uint32_t slot;
+  uint32_t is_playgo_enabled;
 } pkg_metadata_t;
+
+_Static_assert(sizeof(pkg_metadata_t) == 0x38,
+               "sceAppInstUtil metadata ABI mismatch");
 
 typedef struct pkg_info {
   char content_id[48];
@@ -23,11 +29,14 @@ typedef struct pkg_info {
 } pkg_info_t;
 
 typedef struct playgo_info {
-  char lang[8][30];
-  char scenario_ids[3][64];
-  char content_ids[64];
+  char languages[30][8];
+  char scenario_ids[64][3];
+  char content_ids[64][48];
   long unknown[810];
 } playgo_info_t;
+
+_Static_assert(sizeof(playgo_info_t) == 0x2700,
+               "sceAppInstUtil PlayGoInfo ABI mismatch");
 
 int sceAppInstUtilInitialize(void);
 int sceAppInstUtilInstallByPackage(const pkg_metadata_t *, pkg_info_t *,
@@ -68,7 +77,9 @@ pkg_installer_install(const char *path) {
     .playgo_scenario_id = "",
     .content_id = "",
     .content_name = "",
-    .icon_url = ""
+    .icon_url = "",
+    .slot = 0,
+    .is_playgo_enabled = 0
   };
   pkg_info_t pkg_info = {0};
   playgo_info_t playgo_info = {0};

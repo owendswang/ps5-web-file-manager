@@ -30,6 +30,7 @@ let permissionOriginal = "";
 let permissionBusy = false;
 let downloadFrame = null;
 let uploadXhr = null;
+let uploadTerminalAbort = false;
 let L = {};
 
 const APP_VERSION = "v1.6";
@@ -457,6 +458,10 @@ function clearTrackedTask() {
   if (trackedTask && trackedTask.op === "download" && downloadFrame) {
     downloadFrame.parentNode.removeChild(downloadFrame);
     downloadFrame = null;
+  }
+  if (trackedTask && trackedTask.op === "upload" && uploadXhr) {
+    uploadTerminalAbort = true;
+    uploadXhr.abort();
   }
   trackedTask = null;
 }
@@ -1798,8 +1803,11 @@ function renderTasks(tasks) {
     if (confirm(t("cancelTaskConfirm", { label: opLabel(task.op) }))) {
       requestTaskCancel(task.id);
       api("/api/cancel", { id: task.id }).then(() => {
-        if (task.op === "upload" && uploadXhr) uploadXhr.abort();
-        return pollTasks();
+        if (task.op !== "upload") return pollTasks();
+        if (uploadXhr) uploadXhr.abort();
+        return api("/api/upload/finish", { task_id: task.id })
+          .catch(() => {})
+          .then(pollTasks);
       }).catch(err => {
         if (trackedTask && trackedTask.id === task.id) trackedTask.cancelRequested = false;
         setStatus(t("cancelFailed", { error: err.message }));
@@ -1941,7 +1949,7 @@ function uploadConflicts(rels) {
   return conflicts;
 }
 
-function uploadFileRequest(taskId, file, rel, overwrite) {
+function uploadFileRequest(taskId, file, rel, overwrite, index) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     uploadXhr = xhr;
@@ -1967,12 +1975,25 @@ function uploadFileRequest(taskId, file, rel, overwrite) {
     };
     xhr.onerror = () => {
       uploadXhr = null;
-      reject(new Error(xhr.statusText || t("backendError")));
+      const error = new Error(xhr.statusText || t("backendError"));
+      api("/api/tasks").then(data => {
+        const task = (data.tasks || []).find(item => item.id === taskId);
+        if (task && Number(task.completed_count || 0) >= index) {
+          resolve();
+        } else if (task && task.state === "failed") {
+          reject(new Error(backendErrorText(task.error_code, task.error_arg,
+            task.error || task.current)));
+        } else {
+          reject(error);
+        }
+      }).catch(() => reject(error));
     };
     xhr.onabort = () => {
       uploadXhr = null;
+      const terminal = uploadTerminalAbort;
+      uploadTerminalAbort = false;
       const err = new Error("aborted");
-      err.name = "AbortError";
+      err.name = terminal ? "TerminalTaskAbort" : "AbortError";
       reject(err);
     };
     xhr.send(file);
@@ -2030,21 +2051,32 @@ async function uploadFiles(files) {
       const file = list[i];
       const rel = rels[i];
       setStatus(t("uploadingStatus", { index: i + 1, count: list.length, name: rel }));
-      await uploadFileRequest(taskId, file, rel, overwrite);
+      await uploadFileRequest(taskId, file, rel, overwrite, i + 1);
     }
     await api("/api/upload/finish", { task_id: taskId });
     await pollTasks();
     setStatus(t("uploadDone", { count: list.length }));
   } catch (err) {
+    const terminalAbort = err && err.name === "TerminalTaskAbort";
     const canceled = err && err.name === "AbortError";
-    if (canceled) {
-      setStatus(t("taskCanceled", { label: opLabel("upload") }));
-    } else {
-      const message = t("uploadFailed", { error: err.message });
-      setStatus(message);
-      alert(message);
+    if (!terminalAbort) {
+      if (taskId) {
+        try {
+          await api("/api/cancel", { id: taskId });
+          await api("/api/upload/finish", { task_id: taskId });
+        } catch (cancelErr) {
+          /* The server may already have moved a failed upload to a terminal state. */
+        }
+      }
+      await pollTasks();
+      if (canceled) {
+        setStatus(t("taskCanceled", { label: opLabel("upload") }));
+      } else {
+        const message = t("uploadFailed", { error: err.message });
+        setStatus(message);
+        alert(message);
+      }
     }
-    await pollTasks();
   } finally {
     uploadXhr = null;
     uploadFilesEl.value = "";

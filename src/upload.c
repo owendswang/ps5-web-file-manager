@@ -28,7 +28,21 @@ typedef struct upload_context {
   int failed;
   int error;
   int task_done;
+  const char *stage;
+  char error_message[256];
 } upload_context_t;
+
+static const char *
+upload_error_message(upload_context_t *ctx) {
+  if(!ctx->error_message[0]) {
+    snprintf(ctx->error_message, sizeof(ctx->error_message), "%s failed%s%s: %s",
+             ctx->stage ? ctx->stage : "upload",
+             ctx->target[0] ? " for " : "",
+             ctx->target[0] ? ctx->target : "",
+             strerror(ctx->error ? ctx->error : EIO));
+  }
+  return ctx->error_message;
+}
 
 static int
 upload_flush(upload_context_t *ctx) {
@@ -81,9 +95,27 @@ finish_upload_task(file_task_t *task, task_state_t state, const char *current,
     if(error) {
       snprintf(task->error, sizeof(task->error), "%s", error);
     }
+    if(state == TASK_FAILED) {
+      snprintf(task->error_code, sizeof(task->error_code), "upload_failed");
+      snprintf(task->error_arg, sizeof(task->error_arg), "%s",
+               current ? current : task->src);
+    }
     task->updated_at = completed_at;
   }
   pthread_mutex_unlock(&g_tasks_lock);
+}
+
+static void
+finish_upload_context_error(upload_context_t *ctx) {
+  if(!ctx->task || ctx->task_done) {
+    return;
+  }
+  upload_error_message(ctx);
+  finish_upload_task(ctx->task,
+                     ctx->error == ECANCELED ? TASK_CANCELED : TASK_FAILED,
+                     ctx->target[0] ? ctx->target : ctx->task->current,
+                     ctx->error == ECANCELED ? "canceled" : ctx->error_message);
+  ctx->task_done = 1;
 }
 
 static file_task_t *
@@ -300,12 +332,18 @@ filemgr_upload_begin(struct MHD_Connection *conn, void **upload_ctx) {
     return -1;
   }
   ctx->fd = -1;
+  ctx->stage = "preparing upload";
   *upload_ctx = ctx;
 
   if(size_text) {
     ctx->expected = strtoull(size_text, NULL, 10);
   }
   ctx->task = task;
+  if(task) {
+    pthread_mutex_lock(&g_tasks_lock);
+    task->active_streams++;
+    pthread_mutex_unlock(&g_tasks_lock);
+  }
   if(task && task_cancel_requested(task)) {
     ctx->failed = 1;
     ctx->error = ECANCELED;
@@ -316,17 +354,20 @@ filemgr_upload_begin(struct MHD_Connection *conn, void **upload_ctx) {
     ctx->error = EBUSY;
     goto fail;
   }
+  ctx->stage = "validating target path";
   if(!base || !rel || path_join_relative(ctx->target, sizeof(ctx->target),
                                          base, rel)) {
     ctx->failed = 1;
     ctx->error = errno ? errno : EINVAL;
     goto fail;
   }
+  ctx->stage = "creating target folders";
   if(ensure_parent_dirs(base, rel)) {
     ctx->failed = 1;
     ctx->error = errno ? errno : EACCES;
     goto fail;
   }
+  ctx->stage = "checking target path";
   if(!lstat(ctx->target, &st)) {
     if(S_ISDIR(st.st_mode) || !overwrite || strcmp(overwrite, "1")) {
       ctx->failed = 1;
@@ -338,19 +379,26 @@ filemgr_upload_begin(struct MHD_Connection *conn, void **upload_ctx) {
     ctx->error = errno;
     goto fail;
   }
+  ctx->stage = "checking target permissions";
   if(check_target_writable(ctx->target, &checked_dirs, &checked_dir_count,
                            error, sizeof(error), code, sizeof(code),
                            arg, sizeof(arg))) {
+    snprintf(ctx->error_message, sizeof(ctx->error_message), "%s",
+             error[0] ? error : "target is not writable");
     ctx->failed = 1;
     ctx->error = errno ? errno : EACCES;
     goto fail;
   }
+  ctx->stage = "checking target space";
   if(check_target_space(ctx->target, ctx->expected, error, sizeof(error),
                         code, sizeof(code), arg, sizeof(arg))) {
+    snprintf(ctx->error_message, sizeof(ctx->error_message), "%s",
+             error[0] ? error : "not enough target space");
     ctx->failed = 1;
     ctx->error = errno ? errno : ENOSPC;
     goto fail;
   }
+  ctx->stage = "creating temporary path";
   n = snprintf(ctx->temp, sizeof(ctx->temp), "%s.wfm-upload-%ld-%lld.tmp",
                ctx->target, (long)getpid(), (long long)time(NULL));
   if(n < 0 || (size_t)n >= sizeof(ctx->temp)) {
@@ -358,12 +406,14 @@ filemgr_upload_begin(struct MHD_Connection *conn, void **upload_ctx) {
     ctx->error = ENAMETOOLONG;
     goto fail;
   }
+  ctx->stage = "opening temporary file";
   ctx->fd = open(ctx->temp, O_WRONLY | O_CREAT | O_TRUNC, 0600);
   if(ctx->fd < 0) {
     ctx->failed = 1;
     ctx->error = errno;
     goto fail;
   }
+  ctx->stage = "allocating upload buffer";
   if(!(ctx->buffer = malloc(UPLOAD_BUFFER_SIZE))) {
     ctx->failed = 1;
     ctx->error = ENOMEM;
@@ -374,13 +424,7 @@ fail:
   free_paths(checked_dirs, checked_dir_count);
   free(base); free(rel); free(overwrite); free(size_text);
   if(ctx->failed) {
-    if(ctx->task) {
-      finish_upload_task(ctx->task,
-                         ctx->error == ECANCELED ? TASK_CANCELED : TASK_FAILED,
-                         ctx->target[0] ? ctx->target : ctx->task->current,
-                         ctx->error == ECANCELED ? "canceled" : strerror(ctx->error ? ctx->error : EIO));
-      ctx->task_done = 1;
-    }
+    finish_upload_context_error(ctx);
     if(ctx->fd >= 0) {
       close(ctx->fd);
       ctx->fd = -1;
@@ -391,6 +435,7 @@ fail:
     errno = ctx->error ? ctx->error : EIO;
     return -1;
   }
+  ctx->stage = "writing file";
   return 0;
 }
 
@@ -404,6 +449,7 @@ filemgr_upload_data(void *upload_ctx, const char *data, size_t size) {
   if(ctx->task && task_cancel_requested(ctx->task)) {
     ctx->failed = 1;
     ctx->error = ECANCELED;
+    finish_upload_context_error(ctx);
     return -1;
   }
   while(size) {
@@ -415,6 +461,7 @@ filemgr_upload_data(void *upload_ctx, const char *data, size_t size) {
     data += take;
     size -= take;
     if(ctx->buffered == UPLOAD_BUFFER_SIZE && upload_flush(ctx)) {
+      finish_upload_context_error(ctx);
       return -1;
     }
   }
@@ -430,45 +477,54 @@ filemgr_upload_finish(struct MHD_Connection *conn, void *upload_ctx) {
     return send_json_error(conn, MHD_HTTP_BAD_REQUEST, "invalid path");
   }
   if(ctx->failed) {
-    if(ctx->task && !ctx->task_done) {
-      finish_upload_task(ctx->task,
-                         ctx->error == ECANCELED ? TASK_CANCELED : TASK_FAILED,
-                         ctx->target[0] ? ctx->target : ctx->task->current,
-                         ctx->error == ECANCELED ? "canceled" : strerror(ctx->error ? ctx->error : EIO));
-      ctx->task_done = 1;
-    }
+    finish_upload_context_error(ctx);
     errno = ctx->error ? ctx->error : EIO;
-    return send_json_error(conn, errno == EEXIST ? MHD_HTTP_CONFLICT :
-                           errno == EBUSY ? MHD_HTTP_CONFLICT :
-                           errno == ECANCELED ? MHD_HTTP_CONFLICT :
-                           errno == ENOSPC ? MHD_HTTP_INSUFFICIENT_STORAGE :
-                           MHD_HTTP_INTERNAL_SERVER_ERROR, NULL);
+    return send_json_error_detail(conn,
+                                  errno == EEXIST ? MHD_HTTP_CONFLICT :
+                                  errno == EBUSY ? MHD_HTTP_CONFLICT :
+                                  errno == ECANCELED ? MHD_HTTP_CONFLICT :
+                                  errno == ENOSPC ? MHD_HTTP_INSUFFICIENT_STORAGE :
+                                  MHD_HTTP_INTERNAL_SERVER_ERROR,
+                                  ctx->error == ECANCELED ? "canceled" : ctx->error_message,
+                                  ctx->error == ECANCELED ? NULL : "upload_failed",
+                                  ctx->target[0] ? ctx->target : NULL);
   }
+  ctx->stage = "writing file";
   if(ctx->buffered && upload_flush(ctx)) {
     ctx->error = ctx->error ? ctx->error : EIO;
     goto done;
   }
+  ctx->stage = "verifying uploaded size";
   if(ctx->expected && ctx->written != ctx->expected) {
     ctx->error = EIO;
     goto done;
   }
+  ctx->stage = "setting file permissions";
   if(fchmod_0777(ctx->fd)) {
     ctx->error = errno;
     goto done;
   }
+  ctx->stage = "syncing file data";
   if(fsync(ctx->fd)) {
     ctx->error = errno;
     goto done;
   }
+  ctx->stage = "closing temporary file";
   if(close(ctx->fd)) {
     ctx->fd = -1;
     ctx->error = errno;
     goto done;
   }
   ctx->fd = -1;
+  ctx->stage = "moving temporary file into place";
   if(rename(ctx->temp, ctx->target)) {
     ctx->error = errno;
     goto done;
+  }
+  if(ctx->task) {
+    pthread_mutex_lock(&g_tasks_lock);
+    ctx->task->upload_completed++;
+    pthread_mutex_unlock(&g_tasks_lock);
   }
   ret = 0;
 
@@ -478,19 +534,18 @@ done:
     ctx->fd = -1;
   }
   if(ret) {
+    upload_error_message(ctx);
     if(ctx->temp[0]) {
       unlink(ctx->temp);
     }
-    if(ctx->task && !ctx->task_done) {
-      finish_upload_task(ctx->task,
-                         ctx->error == ECANCELED ? TASK_CANCELED : TASK_FAILED,
-                         ctx->target[0] ? ctx->target : ctx->task->current,
-                         ctx->error == ECANCELED ? "canceled" : strerror(ctx->error ? ctx->error : EIO));
-      ctx->task_done = 1;
-    }
+    finish_upload_context_error(ctx);
     errno = ctx->error ? ctx->error : EIO;
-    return send_json_error(conn, errno == ECANCELED ? MHD_HTTP_CONFLICT :
-                           MHD_HTTP_INTERNAL_SERVER_ERROR, NULL);
+    return send_json_error_detail(conn,
+                                  errno == ECANCELED ? MHD_HTTP_CONFLICT :
+                                  MHD_HTTP_INTERNAL_SERVER_ERROR,
+                                  ctx->error == ECANCELED ? "canceled" : ctx->error_message,
+                                  ctx->error == ECANCELED ? NULL : "upload_failed",
+                                  ctx->target[0] ? ctx->target : NULL);
   }
   return send_json_ok(conn);
 }
@@ -516,5 +571,12 @@ filemgr_upload_free(void *upload_ctx) {
     }
   }
   free(ctx->buffer);
+  if(ctx->task) {
+    pthread_mutex_lock(&g_tasks_lock);
+    if(ctx->task->active_streams) {
+      ctx->task->active_streams--;
+    }
+    pthread_mutex_unlock(&g_tasks_lock);
+  }
   free(ctx);
 }

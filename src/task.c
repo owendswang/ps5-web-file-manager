@@ -82,7 +82,7 @@ remove_finished_tasks_locked(void) {
   while(*link) {
     file_task_t *task = *link;
 
-    if(task_is_active(task)) {
+    if(task_is_active(task) || task->active_streams) {
       link = &task->next;
       continue;
     }
