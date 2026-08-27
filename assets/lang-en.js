@@ -17,6 +17,7 @@ window.WFM_LANG = {
   save: "Save",
   apply: "Apply",
   exit: "Exit",
+  exitConfirm: "Exit and stop the file manager process?",
   exiting: "Exiting...",
   refresh: "Refresh",
   mkdir: "New Folder",

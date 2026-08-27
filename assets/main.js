@@ -2200,6 +2200,7 @@ function toggleUploadMenu() {
 }
 
 function actionExit() {
+  if (!confirm(t("exitConfirm"))) return;
   setStatus(t("exiting"));
   exitBtn.disabled = true;
   api("/api/exit").catch(err => {

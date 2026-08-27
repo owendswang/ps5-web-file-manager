@@ -7,6 +7,7 @@
 #include <limits.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -14,6 +15,10 @@
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
+
+#ifndef __linux__
+#include <ps5/kernel.h>
+#endif
 
 #include "filemgr_internal.h"
 #include "json_util.h"
@@ -30,6 +35,59 @@
 #define FILE_TASK_QUEUE_LIMIT 128
 #define LARGE_FILE_THRESHOLD (256LL * 1024 * 1024)
 #define TRANSFER_ALERT_THRESHOLD (10 * 60)
+
+#ifndef __linux__
+typedef struct shell_ui_uri_param {
+  uint32_t size;
+  uint32_t user_id;
+} shell_ui_uri_param_t;
+
+int sceKernelLoadStartModule(const char *, size_t, const void *, uint32_t,
+                             void *, int *);
+int sceUserServiceInitialize(const int *);
+int sceUserServiceGetForegroundUser(int *);
+
+static int
+navigate_to_home(void) {
+  int (*initialize)(void);
+  int (*launch_by_uri)(const char *, shell_ui_uri_param_t *);
+  shell_ui_uri_param_t param = {.size = sizeof(param)};
+  const char *module_path =
+    "/system_ex/common_ex/lib/libSceShellUIUtil.sprx";
+  const char *uri = "pshomeui:navigateToHome?bootCondition=psButton";
+  const int priority = 256;
+  int module;
+  int result;
+
+  (void)sceUserServiceInitialize(&priority);
+  module = sceKernelLoadStartModule(module_path, 0, NULL, 0, NULL, NULL);
+  if(module < 0) {
+    printf("load libSceShellUIUtil: 0x%08X\n", (unsigned int)module);
+    return module;
+  }
+  initialize = (void *)kernel_dynlib_dlsym(
+    -1, (uint32_t)module, "sceShellUIUtilInitialize");
+  launch_by_uri = (void *)kernel_dynlib_dlsym(
+    -1, (uint32_t)module, "sceShellUIUtilLaunchByUri");
+  if(!initialize || !launch_by_uri) {
+    printf("resolve libSceShellUIUtil URI functions failed\n");
+    return -1;
+  }
+
+  result = initialize();
+  if(result < 0) {
+    printf("sceShellUIUtilInitialize: 0x%08X\n", (unsigned int)result);
+  }
+  result = sceUserServiceGetForegroundUser((int *)&param.user_id);
+  if(result < 0) {
+    printf("sceUserServiceGetForegroundUser: 0x%08X\n",
+           (unsigned int)result);
+  }
+  result = launch_by_uri(uri, &param);
+  printf("sceShellUIUtilLaunchByUri: 0x%08X\n", (unsigned int)result);
+  return result;
+}
+#endif
 
 typedef struct task_completion {
   unsigned long id;
@@ -1918,6 +1976,11 @@ static void *
 stop_websrv_later(void *arg) {
   (void)arg;
   usleep(250000);
+#ifndef __linux__
+  (void)navigate_to_home();
+  /* Keep this process alive while ShellUI handles the asynchronous URI. */
+  usleep(1000000);
+#endif
   websrv_stop();
   return NULL;
 }

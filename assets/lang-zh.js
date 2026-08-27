@@ -17,6 +17,7 @@ window.WFM_LANG = {
   save: "保存",
   apply: "应用",
   exit: "退出",
+  exitConfirm: "是否退出并关闭文件管理器进程？",
   exiting: "正在退出...",
   refresh: "刷新",
   mkdir: "新建目录",
