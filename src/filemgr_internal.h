@@ -16,6 +16,7 @@ typedef enum task_op {
   TASK_CHMOD,
   TASK_DOWNLOAD,
   TASK_UPLOAD,
+  TASK_PKG_INSTALL,
 } task_op_t;
 
 typedef enum task_state {
@@ -58,6 +59,7 @@ typedef struct file_task {
   unsigned int eta_sample_next;
   unsigned int eta_sample_count;
   int cancel_requested;
+  int reported; /* Terminal state has been included in /api/tasks. */
   unsigned int active_streams;
   time_t created_at;
   time_t transfer_started_at;

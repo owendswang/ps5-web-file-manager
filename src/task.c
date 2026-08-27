@@ -23,6 +23,7 @@ task_op_name(task_op_t op) {
   case TASK_CHMOD: return "chmod";
   case TASK_DOWNLOAD: return "download";
   case TASK_UPLOAD: return "upload";
+  case TASK_PKG_INSTALL: return "pkg_install";
   default: return "unknown";
   }
 }
@@ -49,7 +50,7 @@ has_active_task_locked(void) {
   file_task_t *task;
 
   for(task = g_tasks; task; task = task->next) {
-    if(task_is_active(task)) {
+    if(task->op != TASK_PKG_INSTALL && task_is_active(task)) {
       return 1;
     }
   }
@@ -82,7 +83,8 @@ remove_finished_tasks_locked(void) {
   while(*link) {
     file_task_t *task = *link;
 
-    if(task_is_active(task) || task->active_streams) {
+    if(task_is_active(task) || task->active_streams ||
+       (task->op == TASK_PKG_INSTALL && !task->reported)) {
       link = &task->next;
       continue;
     }

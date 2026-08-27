@@ -18,6 +18,7 @@
 #include "filemgr_internal.h"
 #include "json_util.h"
 #include "path_util.h"
+#include "pkg_info.h"
 #include "pkg_installer.h"
 #include "websrv.h"
 
@@ -90,6 +91,11 @@ typedef struct copy_queue {
 #endif
 
 static task_completion_t g_last_completion;
+#ifndef __linux__
+static pthread_cond_t g_pkg_tasks_cond = PTHREAD_COND_INITIALIZER;
+static pthread_t g_pkg_worker_thread;
+static int g_pkg_worker_started;
+#endif
 
 void
 record_task_completion_locked(file_task_t *task, time_t completed_at) {
@@ -1861,6 +1867,7 @@ api_tasks(struct MHD_Connection *conn) {
                   task->transfer_started_at ? (long long)(now - task->transfer_started_at) : 0LL,
                   task->created_at ? (long long)(now - task->created_at) : 0LL,
                   (long long)task->updated_at);
+    if(!task_is_active(task)) task->reported = 1;
   }
   strbuf_printf(&b, "],\"now\":%lld,\"completion\":", (long long)now);
   if(g_last_completion.id) {
@@ -1890,7 +1897,7 @@ api_cancel(struct MHD_Connection *conn) {
   free(idstr);
   pthread_mutex_lock(&g_tasks_lock);
   for(task = g_tasks; task; task = task->next) {
-    if(task->id == id && task_is_active(task)) {
+    if(task->id == id && task->op != TASK_PKG_INSTALL && task_is_active(task)) {
       task->cancel_requested = 1;
       if(task->op == TASK_DOWNLOAD && task->state == TASK_QUEUED) {
         task->state = TASK_CANCELED;
@@ -2147,40 +2154,178 @@ api_chmod(struct MHD_Connection *conn, const char *body, size_t body_size) {
   return ret;
 }
 
+#ifndef __linux__
+static file_task_t *
+next_pkg_task_locked(void) {
+  file_task_t *task;
+  file_task_t *next = NULL;
+
+  for(task = g_tasks; task; task = task->next) {
+    if(task->op == TASK_PKG_INSTALL && task->state == TASK_QUEUED &&
+       (!next || task->id < next->id)) next = task;
+  }
+  return next;
+}
+
+static void *
+pkg_task_worker(void *arg) {
+  (void)arg;
+
+  while(1) {
+    file_task_t *task;
+    int result;
+
+    pthread_mutex_lock(&g_tasks_lock);
+    while(!(task = next_pkg_task_locked())) {
+      pthread_cond_wait(&g_pkg_tasks_cond, &g_tasks_lock);
+    }
+    task->state = TASK_RUNNING;
+    snprintf(task->current, sizeof(task->current), "%s", task->src);
+    task->updated_at = time(NULL);
+    pthread_mutex_unlock(&g_tasks_lock);
+
+    result = pkg_installer_install(task->srcs[0]);
+    if(result) {
+      char error_code[16];
+      snprintf(error_code, sizeof(error_code), "0x%08X", (unsigned int)result);
+      task_set_error_code(task, "pkg_install_failed", error_code);
+      task_update(task, TASK_FAILED, task->src, 0,
+                  "package installation failed");
+    } else {
+      task_update(task, TASK_DONE, task->src, 0, NULL);
+    }
+  }
+  return NULL;
+}
+
+static file_task_t *
+active_pkg_task_locked(const char *path) {
+  file_task_t *task;
+
+  for(task = g_tasks; task; task = task->next) {
+    if(task->op == TASK_PKG_INSTALL && task_is_active(task) &&
+       !strcmp(task->srcs[0], path)) return task;
+  }
+  return NULL;
+}
+#endif
+
+static int
+enqueue_pkg_tasks(char **paths, size_t count, unsigned long *ids) {
+#ifdef __linux__
+  (void)paths; (void)count; (void)ids;
+  return PKG_INSTALL_UNSUPPORTED;
+#else
+  file_task_t **pending = calloc(count, sizeof(*pending));
+  int result = 0;
+
+  if(!pending) return -1;
+  for(size_t i = 0; i < count; i++) {
+    file_task_t *task = calloc(1, sizeof(*task));
+    if(!task || !(task->srcs = calloc(1, sizeof(*task->srcs))) ||
+       !(task->srcs[0] = strdup(paths[i]))) {
+      free_task(task);
+      result = -1;
+      goto done;
+    }
+    task->op = TASK_PKG_INSTALL;
+    task->state = TASK_QUEUED;
+    task->src_count = 1;
+    snprintf(task->src, sizeof(task->src), "%s", paths[i]);
+    task->created_at = time(NULL);
+    task->updated_at = task->created_at;
+    pending[i] = task;
+  }
+
+  pthread_mutex_lock(&g_tasks_lock);
+  if(!g_pkg_worker_started) {
+    result = pthread_create(&g_pkg_worker_thread, NULL, pkg_task_worker, NULL);
+    if(!result) {
+      pthread_detach(g_pkg_worker_thread);
+      g_pkg_worker_started = 1;
+    }
+  }
+  if(!result) {
+    for(size_t i = 0; i < count; i++) {
+      file_task_t *existing = active_pkg_task_locked(paths[i]);
+      if(existing) {
+        ids[i] = existing->id;
+        free_task(pending[i]);
+      } else {
+        pending[i]->id = g_next_task_id++;
+        ids[i] = pending[i]->id;
+        pending[i]->next = g_tasks;
+        g_tasks = pending[i];
+      }
+      pending[i] = NULL;
+    }
+    pthread_cond_signal(&g_pkg_tasks_cond);
+  }
+  pthread_mutex_unlock(&g_tasks_lock);
+
+done:
+  for(size_t i = 0; i < count; i++) free_task(pending[i]);
+  free(pending);
+  return result;
+#endif
+}
+
 static enum MHD_Result
-api_install_pkg(struct MHD_Connection *conn) {
-  char *path = fs_path_value(query_value(conn, "path"));
-  const char *extension;
-  struct stat st;
-  char error_code[16];
+api_install_pkg(struct MHD_Connection *conn, const char *body,
+                size_t body_size) {
+  char *paths_raw = body_form_value(body, body_size, "paths");
+  char **paths = NULL;
+  unsigned long *ids = NULL;
+  size_t count = 0;
+  strbuf_t json = {0};
   int result;
 
-  if(!path || !(extension = strrchr(path, '.')) ||
-     strcasecmp(extension, ".pkg")) {
-    free(path);
-    return send_json_error_detail(conn, MHD_HTTP_BAD_REQUEST,
-                                  "file is not a PKG package",
-                                  "pkg_type_invalid", NULL);
+  if(!paths_raw || parse_paths(paths_raw, &paths, &count) ||
+     !(ids = calloc(count, sizeof(*ids)))) {
+    free(paths_raw); free_paths(paths, count); free(ids);
+    return send_json_error(conn, MHD_HTTP_BAD_REQUEST, "invalid path");
   }
-  if(stat(path, &st) || !S_ISREG(st.st_mode)) {
-    free(path);
-    return send_json_error(conn, MHD_HTTP_NOT_FOUND, "file not found");
+  for(size_t i = 0; i < count; i++) {
+    const char *extension = strrchr(paths[i], '.');
+    struct stat st;
+
+    if(!extension || strcasecmp(extension, ".pkg")) {
+      enum MHD_Result ret = send_json_error_detail(
+        conn, MHD_HTTP_BAD_REQUEST, "file is not a PKG package",
+        "pkg_type_invalid", paths[i]);
+      free(paths_raw); free_paths(paths, count); free(ids);
+      return ret;
+    }
+    if(stat(paths[i], &st) || !S_ISREG(st.st_mode)) {
+      free(paths_raw); free_paths(paths, count); free(ids);
+      return send_json_error(conn, MHD_HTTP_NOT_FOUND, "file not found");
+    }
   }
 
-  result = pkg_installer_install(path);
-  free(path);
+  result = enqueue_pkg_tasks(paths, count, ids);
+  free(paths_raw); free_paths(paths, count);
   if(result == PKG_INSTALL_UNSUPPORTED) {
+    free(ids);
     return send_json_error_detail(conn, MHD_HTTP_NOT_IMPLEMENTED,
                                   "package installation is only available on PS5",
                                   "pkg_install_unsupported", NULL);
   }
   if(result) {
-    snprintf(error_code, sizeof(error_code), "0x%08X", (unsigned int)result);
-    return send_json_error_detail(conn, MHD_HTTP_INTERNAL_SERVER_ERROR,
-                                  "package installation failed",
-                                  "pkg_install_failed", error_code);
+    free(ids);
+    return send_json_error(conn, MHD_HTTP_INTERNAL_SERVER_ERROR,
+                           "could not queue package installation");
   }
-  return send_json_ok(conn);
+
+  /* Keep the action from completing instantly after an accidental press. */
+  usleep(600000);
+  strbuf_append(&json, "{\"ok\":true,\"task_ids\":[");
+  for(size_t i = 0; i < count; i++) {
+    if(i) strbuf_append(&json, ",");
+    strbuf_printf(&json, "%lu", ids[i]);
+  }
+  strbuf_append(&json, "]}");
+  free(ids);
+  return send_buffer(conn, MHD_HTTP_OK, json.data, "application/json");
 }
 
 enum MHD_Result
@@ -2209,10 +2354,20 @@ filemgr_api_request(struct MHD_Connection *conn, const char *url,
       send_json_error(conn, MHD_HTTP_METHOD_NOT_ALLOWED, "invalid method") :
       api_chmod(conn, body, body_size);
   }
+  if(!strcmp(url, "/api/pkg-info")) {
+    return strcmp(method, MHD_HTTP_METHOD_GET) ?
+      send_json_error(conn, MHD_HTTP_METHOD_NOT_ALLOWED, "invalid method") :
+      api_pkg_info(conn);
+  }
+  if(!strcmp(url, "/api/pkg-icon")) {
+    return strcmp(method, MHD_HTTP_METHOD_GET) ?
+      send_json_error(conn, MHD_HTTP_METHOD_NOT_ALLOWED, "invalid method") :
+      api_pkg_icon(conn);
+  }
   if(!strcmp(url, "/api/install-pkg")) {
     return strcmp(method, MHD_HTTP_METHOD_POST) ?
       send_json_error(conn, MHD_HTTP_METHOD_NOT_ALLOWED, "invalid method") :
-      api_install_pkg(conn);
+      api_install_pkg(conn, body, body_size);
   }
   if(!strcmp(url, "/api/text")) {
     return strcmp(method, MHD_HTTP_METHOD_GET) ?

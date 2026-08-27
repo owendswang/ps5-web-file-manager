@@ -123,6 +123,20 @@
     </section>
   </div>
 
+  <div id="pkgInfoOverlay" class="text-editor-overlay" hidden>
+    <section class="text-editor-panel pkg-info-panel" role="dialog" aria-modal="true" aria-labelledby="pkgInfoTitle">
+      <div class="pkg-info-image-stage">
+        <img id="pkgInfoImage" class="pkg-info-image" src="/icon-pkg.png" alt="">
+      </div>
+      <h2 id="pkgInfoTitle" class="pkg-info-title" data-i18n="pkgInfoTitle"></h2>
+      <div id="pkgInfoFields" class="pkg-info-fields"></div>
+      <div class="text-editor-actions">
+        <button id="pkgInfoCloseBtn" class="secondary" data-i18n="close"></button>
+        <button id="pkgInfoInstallBtn" class="primary" data-i18n="install"></button>
+      </div>
+    </section>
+  </div>
+
   <div id="permissionOverlay" class="permission-overlay" hidden>
     <section class="permission-panel" role="dialog" aria-modal="true" aria-labelledby="permissionTitle">
       <h2 id="permissionTitle" class="permission-title" data-i18n="permissionsTitle"></h2>

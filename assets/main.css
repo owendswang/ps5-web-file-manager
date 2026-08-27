@@ -818,6 +818,70 @@ input[type="checkbox"] {
   margin-top: 14px;
 }
 
+.pkg-info-panel {
+  width: 760px;
+  height: auto;
+  max-height: calc(100vh - 96px);
+}
+
+.pkg-info-image-stage {
+  height: 260px;
+  flex: 0 0 260px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 18px;
+}
+
+.pkg-info-image {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 260px;
+  pointer-events: none;
+  -webkit-user-drag: none;
+  user-select: none;
+}
+
+.pkg-info-title {
+  margin: 0 0 12px;
+  color: #edf0f2;
+  font-size: 26px;
+  font-weight: 600;
+}
+
+.pkg-info-fields {
+  min-height: 80px;
+  flex: 1 1 auto;
+  margin-bottom: 18px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  border-top: 1px solid #2d343d;
+}
+
+.pkg-info-row {
+  display: flex;
+  padding: 10px 0;
+  border-bottom: 1px solid #2d343d;
+  font-size: 18px;
+}
+
+.pkg-info-key {
+  width: 244px;
+  flex: 0 0 244px;
+  padding-right: 24px;
+  color: #8f9ba6;
+  word-break: break-all;
+}
+
+.pkg-info-value {
+  min-width: 0;
+  flex: 1 1 auto;
+  color: #d9e0e6;
+  word-break: break-all;
+}
+
 .permission-overlay {
   position: fixed;
   top: 0;

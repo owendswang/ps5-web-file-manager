@@ -28,12 +28,14 @@ let textEditorBusy = false;
 let permissionItems = [];
 let permissionOriginal = "";
 let permissionBusy = false;
+let pkgInfoItem = null;
+let pkgInfoRequestId = 0;
 let downloadFrame = null;
 let uploadXhr = null;
 let uploadTerminalAbort = false;
 let L = {};
 
-const APP_VERSION = "v1.6";
+const APP_VERSION = "v1.7";
 const LAST_PATH_KEY = "ps5-web-file-mgr:last-path";
 const SORT_KEY = "ps5-web-file-mgr:list-sort";
 const LOADING_DISPLAY_DELAY = 250;
@@ -84,6 +86,11 @@ const imagePreviewOverlayEl = document.getElementById("imagePreviewOverlay");
 const imagePreviewNameEl = document.getElementById("imagePreviewName");
 const imagePreviewEl = document.getElementById("imagePreview");
 const imagePreviewCloseBtn = document.getElementById("imagePreviewCloseBtn");
+const pkgInfoOverlayEl = document.getElementById("pkgInfoOverlay");
+const pkgInfoImageEl = document.getElementById("pkgInfoImage");
+const pkgInfoFieldsEl = document.getElementById("pkgInfoFields");
+const pkgInfoCloseBtn = document.getElementById("pkgInfoCloseBtn");
+const pkgInfoInstallBtn = document.getElementById("pkgInfoInstallBtn");
 const permissionOverlayEl = document.getElementById("permissionOverlay");
 const permissionPathEl = document.getElementById("permissionPath");
 const permissionModeEl = document.getElementById("permissionMode");
@@ -420,11 +427,11 @@ function taskElapsed(task) {
 }
 
 function opLabel(op) {
-  return { copy: t("copy"), move: t("move"), delete: t("delete"), chmod: t("permissionsTitle"), download: t("download"), upload: t("upload") }[op] || op;
+  return { copy: t("copy"), move: t("move"), delete: t("delete"), chmod: t("permissionsTitle"), download: t("download"), upload: t("upload"), pkg_install: t("installPackage") }[op] || op;
 }
 
 function taskOpLabel(op) {
-  return { copy: t("copying"), move: t("moving"), delete: t("deleting"), chmod: t("changingPermissions"), download: t("downloading"), upload: t("uploading") }[op] || op;
+  return { copy: t("copying"), move: t("moving"), delete: t("deleting"), chmod: t("changingPermissions"), download: t("downloading"), upload: t("uploading"), pkg_install: t("installPackage") }[op] || op;
 }
 
 function isPlayStationBrowser() {
@@ -479,6 +486,14 @@ function taskFailureMessage(task) {
 }
 
 function handleTerminalTask(task) {
+  if (task.op === "pkg_install") {
+    if (task.state === "failed") {
+      const message = taskFailureMessage(task);
+      setStatus(message);
+      alert(message);
+    }
+    return;
+  }
   if (task.state === "failed") {
     clearTrackedTask();
     const message = taskFailureMessage(task);
@@ -593,7 +608,7 @@ function historyBlocked() {
     pendingOverlayText || taskOverlayTimer || !overlayEl.hidden ||
     !contentLoadingEl.hidden || contentEl.classList.contains("loading") ||
     !textEditorOverlayEl.hidden || !imagePreviewOverlayEl.hidden ||
-    !permissionOverlayEl.hidden);
+    !pkgInfoOverlayEl.hidden || !permissionOverlayEl.hidden);
 }
 
 function savePath(path) {
@@ -729,40 +744,31 @@ function itemTypeLabel(item) {
   return t("file");
 }
 
-async function installPkg(item) {
-  if (busy || loadingPath) return;
+async function queuePkgInstall(items) {
+  if (busy || loadingPath || !items.length) return;
   try {
     localActionBusy = true;
     setBusy(true);
-    setStatus(t("pkgInstalling", { name: displayName(item) }));
-    await api("/api/install-pkg", { path: item.path });
-    setStatus(t("pkgInstallStarted", { name: displayName(item) }));
+    setStatus(t("pkgInstalling", { name: itemTitle(items) }));
+    await apiForm("/api/install-pkg", {
+      paths: items.map(item => item.path).join("\n")
+    });
+    setStatus(t("pkgInstallStarted", { name: itemTitle(items) }));
+    await pollTasks();
   } catch (err) {
     showActionFailed(t("installPackage"), err.message);
   } finally {
     localActionBusy = false;
-    setBusy(false);
+    if (overlayEl.hidden && !taskOverlayTimer) setBusy(false);
   }
 }
 
-async function actionInstallSelectedPkgs() {
-  if (busy || loadingPath) return;
-  const items = selectedEntries().filter(isPkgPackage);
-  if (!items.length) return;
-  try {
-    localActionBusy = true;
-    setBusy(true);
-    for (let i = 0; i < items.length; i++) {
-      setStatus(t("pkgInstalling", { name: displayName(items[i]) }));
-      await api("/api/install-pkg", { path: items[i].path });
-    }
-    setStatus(t("pkgInstallStarted", { name: itemTitle(items) }));
-  } catch (err) {
-    showActionFailed(t("installPackage"), err.message);
-  } finally {
-    localActionBusy = false;
-    setBusy(false);
-  }
+function installPkg(item) {
+  return queuePkgInstall([item]);
+}
+
+function actionInstallSelectedPkgs() {
+  return queuePkgInstall(selectedEntries().filter(isPkgPackage));
 }
 
 function openImagePreview(item) {
@@ -781,6 +787,95 @@ function closeImagePreview() {
   imagePreviewNameEl.title = "";
   imagePreviewEl.removeAttribute("src");
   setModalBackgroundLocked(false);
+}
+
+function addPkgInfoRow(name, value) {
+  if (value === undefined || value === null || String(value) === "") return;
+  const row = document.createElement("div");
+  row.className = "pkg-info-row";
+  const key = document.createElement("div");
+  key.className = "pkg-info-key";
+  key.textContent = name;
+  const text = document.createElement("div");
+  text.className = "pkg-info-value";
+  text.textContent = String(value);
+  appendChildren(row, key, text);
+  pkgInfoFieldsEl.appendChild(row);
+}
+
+function pkgHex(value) {
+  return "0x" + ("00000000" + (Number(value || 0) >>> 0).toString(16).toUpperCase()).slice(-8);
+}
+
+async function openPkgInfo(item) {
+  if (busy || loadingPath) return;
+  const requestId = ++pkgInfoRequestId;
+  pkgInfoItem = item;
+  setModalBackgroundLocked(true);
+  pkgInfoFieldsEl.innerHTML = "";
+  pkgInfoImageEl.src = "/icon-pkg.png";
+  pkgInfoInstallBtn.disabled = true;
+  setStatus(t("pkgInfoLoading"));
+  try {
+    const data = await api("/api/pkg-info", { path: item.path }, { method: "GET" });
+    if (requestId !== pkgInfoRequestId || pkgInfoItem !== item) return;
+    pkgInfoFieldsEl.innerHTML = "";
+    const fields = data.fields || [];
+    const priority = [
+      "TITLE", "titleName", "TITLE_ID", "titleId",
+      "VERSION", "masterVersion", "APP_VER", "contentVersion"
+    ];
+    const shown = {};
+    for (const name of priority) {
+      const field = fields.find(item => item.name === name);
+      if (field) {
+        addPkgInfoRow(field.name, field.value);
+        shown[name] = true;
+      }
+    }
+    for (const field of fields) {
+      if (!shown[field.name]) addPkgInfoRow(field.name, field.value);
+    }
+    if (!fields.some(field => field.name === "CONTENT_ID" || field.name === "contentId")) {
+      addPkgInfoRow("PKG_CONTENT_ID", data.content_id);
+    }
+    addPkgInfoRow("PKG_SIZE", formatBytes(data.size, true));
+    addPkgInfoRow("PKG_CONTENT_TYPE", pkgHex(data.content_type));
+    addPkgInfoRow("PKG_CONTENT_FLAGS", pkgHex(data.content_flags));
+    if (data.has_icon) {
+      pkgInfoImageEl.src = "/api/pkg-icon?path=" + encodeURIComponent(item.path) +
+        "&mtime=" + encodeURIComponent(item.mtime || 0);
+    }
+    pkgInfoInstallBtn.disabled = false;
+    pkgInfoOverlayEl.hidden = false;
+    pkgInfoFieldsEl.scrollTop = 0;
+    pkgInfoInstallBtn.focus();
+    await nextPaint();
+    if (requestId === pkgInfoRequestId) pkgInfoFieldsEl.scrollTop = 0;
+  } catch (err) {
+    if (requestId !== pkgInfoRequestId) return;
+    pkgInfoItem = null;
+    pkgInfoFieldsEl.innerHTML = "";
+    setModalBackgroundLocked(false);
+    showActionFailed(t("pkgInfoTitle"), err.message);
+  }
+}
+
+function closePkgInfo() {
+  pkgInfoRequestId++;
+  pkgInfoOverlayEl.hidden = true;
+  pkgInfoItem = null;
+  pkgInfoFieldsEl.innerHTML = "";
+  pkgInfoImageEl.src = "/icon-pkg.png";
+  pkgInfoInstallBtn.disabled = true;
+  setModalBackgroundLocked(false);
+}
+
+function installPkgFromInfo() {
+  const item = pkgInfoItem;
+  if (!item || pkgInfoInstallBtn.disabled) return;
+  closePkgInfo();
+  installPkg(item);
 }
 
 function permissionModeText(mode) {
@@ -1720,7 +1815,8 @@ async function actionPaste() {
 }
 
 function renderTasks(tasks) {
-  const active = tasks.find(task => task.state === "queued" || task.state === "running");
+  const fileTasks = tasks.filter(task => task.op !== "pkg_install");
+  const active = fileTasks.find(task => task.state === "queued" || task.state === "running");
   if (!active && pendingOverlayText) {
     renderPendingOverlay(pendingOverlayText, pendingOverlayLabel);
     showTaskOverlay();
@@ -1827,6 +1923,7 @@ async function pollTasks() {
     const data = await api("/api/tasks");
     taskPollFailedAlertShown = false;
     const tasks = data.tasks || [];
+    const fileTasks = tasks.filter(task => task.op !== "pkg_install");
     const completion = data.completion;
     if (lastCompletionId === null) {
       lastCompletionId = completion ? completion.id : 0;
@@ -1856,7 +1953,7 @@ async function pollTasks() {
         trackedTask.state = task.state;
       }
       if (isTerminalTask(task)) {
-        shouldRefresh = true;
+        if (task.op !== "pkg_install") shouldRefresh = true;
         handleTerminalTask(task);
       }
     }
@@ -1866,7 +1963,7 @@ async function pollTasks() {
       shouldRefresh = true;
       clearTrackedTask();
     }
-    if (taskBecameIdle && !tasks.length) shouldRefresh = true;
+    if (taskBecameIdle && !fileTasks.length) shouldRefresh = true;
     if (shouldRefresh) {
       if (taskBecameIdle) startContentLoadingTimer();
       clearSelection(false);
@@ -2138,6 +2235,13 @@ textEditorCloseBtn.addEventListener("click", requestCloseTextEditor);
 textEditorSaveBtn.addEventListener("click", saveTextEditor);
 newTextBtn.addEventListener("click", actionNewText);
 imagePreviewCloseBtn.addEventListener("click", closeImagePreview);
+pkgInfoCloseBtn.addEventListener("click", closePkgInfo);
+pkgInfoInstallBtn.addEventListener("click", installPkgFromInfo);
+pkgInfoImageEl.addEventListener("error", () => {
+  if (pkgInfoImageEl.getAttribute("src") !== "/icon-pkg.png") {
+    pkgInfoImageEl.src = "/icon-pkg.png";
+  }
+});
 permissionCancelBtn.addEventListener("click", requestClosePermissionDialog);
 permissionApplyBtn.addEventListener("click", applyPermissionMode);
 permissionModeEl.addEventListener("input", () => {
@@ -2155,6 +2259,10 @@ window.addEventListener("popstate", event => {
     }
     if (!permissionOverlayEl.hidden) {
       requestClosePermissionDialog();
+      return;
+    }
+    if (!pkgInfoOverlayEl.hidden) {
+      closePkgInfo();
       return;
     }
     setStatus(t("activeTask"));
@@ -2182,6 +2290,9 @@ textEditorOverlayEl.addEventListener("click", event => {
 });
 imagePreviewOverlayEl.addEventListener("click", event => {
   if (event.target === imagePreviewOverlayEl) closeImagePreview();
+});
+pkgInfoOverlayEl.addEventListener("click", event => {
+  if (event.target === pkgInfoOverlayEl) closePkgInfo();
 });
 permissionOverlayEl.addEventListener("click", event => {
   if (event.target === permissionOverlayEl) requestClosePermissionDialog();
@@ -2228,7 +2339,7 @@ filesEl.addEventListener("click", event => {
       } else await load(cwd, false, true);
     }, 0);
   }
-  else if (isPkgPackage(item)) installPkg(item);
+  else if (isPkgPackage(item)) openPkgInfo(item);
   else if (isPreviewableImage(item)) openImagePreview(item);
   else if (isEditableText(item)) openTextEditor(item);
   else togglePath(item.path, !selected.has(item.path));
