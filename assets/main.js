@@ -88,6 +88,7 @@ const imagePreviewEl = document.getElementById("imagePreview");
 const imagePreviewCloseBtn = document.getElementById("imagePreviewCloseBtn");
 const pkgInfoOverlayEl = document.getElementById("pkgInfoOverlay");
 const pkgInfoImageEl = document.getElementById("pkgInfoImage");
+const pkgInfoTitleEl = document.getElementById("pkgInfoTitle");
 const pkgInfoFieldsEl = document.getElementById("pkgInfoFields");
 const pkgInfoCloseBtn = document.getElementById("pkgInfoCloseBtn");
 const pkgInfoInstallBtn = document.getElementById("pkgInfoInstallBtn");
@@ -345,21 +346,25 @@ function displayPath(path) {
   return decodeFsText(path);
 }
 
-function renderAddressPath() {
-  const path = displayPath(cwd);
-  pathEl.title = path;
-  pathEl.textContent = path;
-  if (pathEl.scrollWidth <= pathEl.clientWidth) return;
+function renderEndOfPath(element, path) {
+  element.textContent = path;
+  if (element.scrollWidth <= element.clientWidth) return;
 
   let low = 0;
   let high = path.length;
   while (low < high) {
     const count = Math.ceil((low + high) / 2);
-    pathEl.textContent = "..." + path.slice(-count);
-    if (pathEl.scrollWidth <= pathEl.clientWidth) low = count;
+    element.textContent = "..." + path.slice(path.length - count);
+    if (element.scrollWidth <= element.clientWidth) low = count;
     else high = count - 1;
   }
-  pathEl.textContent = "..." + path.slice(-low);
+  element.textContent = "..." + path.slice(path.length - low);
+}
+
+function renderAddressPath() {
+  const path = displayPath(cwd);
+  pathEl.title = path;
+  renderEndOfPath(pathEl, path);
 }
 
 async function fetchText(path, params) {
@@ -753,6 +758,7 @@ async function queuePkgInstall(items) {
     await apiForm("/api/install-pkg", {
       paths: items.map(item => item.path).join("\n")
     });
+    clearSelection();
     setStatus(t("pkgInstallStarted", { name: itemTitle(items) }));
     await pollTasks();
   } catch (err) {
@@ -820,6 +826,8 @@ async function openPkgInfo(item) {
     const data = await api("/api/pkg-info", { path: item.path }, { method: "GET" });
     if (requestId !== pkgInfoRequestId || pkgInfoItem !== item) return;
     pkgInfoFieldsEl.innerHTML = "";
+    const platform = data.platform === "PS5" ? "PS5" : "PS4";
+    pkgInfoTitleEl.textContent = platform + " " + t("pkgInfoTitle");
     const fields = data.fields || [];
     const priority = [
       "TITLE", "titleName", "TITLE_ID", "titleId",
@@ -833,13 +841,13 @@ async function openPkgInfo(item) {
         shown[name] = true;
       }
     }
+    addPkgInfoRow("PKG_SIZE", formatBytes(data.size, true));
     for (const field of fields) {
       if (!shown[field.name]) addPkgInfoRow(field.name, field.value);
     }
     if (!fields.some(field => field.name === "CONTENT_ID" || field.name === "contentId")) {
       addPkgInfoRow("PKG_CONTENT_ID", data.content_id);
     }
-    addPkgInfoRow("PKG_SIZE", formatBytes(data.size, true));
     addPkgInfoRow("PKG_CONTENT_TYPE", pkgHex(data.content_type));
     addPkgInfoRow("PKG_CONTENT_FLAGS", pkgHex(data.content_flags));
     if (data.has_icon) {
@@ -865,6 +873,7 @@ function closePkgInfo() {
   pkgInfoRequestId++;
   pkgInfoOverlayEl.hidden = true;
   pkgInfoItem = null;
+  pkgInfoTitleEl.textContent = t("pkgInfoTitle");
   pkgInfoFieldsEl.innerHTML = "";
   pkgInfoImageEl.src = "/icon-pkg.png";
   pkgInfoInstallBtn.disabled = true;
@@ -940,6 +949,7 @@ function openPermissionDialog(item) {
   syncPermissionChecks(permissionModeEl.value);
   setPermissionBusy(false);
   permissionOverlayEl.hidden = false;
+  renderSinglePermissionPath();
   permissionModeEl.focus();
   permissionModeEl.select();
 }
@@ -1144,6 +1154,12 @@ function itemListTitle(items, limit) {
   if (items.length === 1) return displayName(items[0]);
   const shown = items.slice(0, limit).map(displayName).join(", ");
   return items.length > limit ? t("selectedItems", { name: shown, count: items.length }) : shown;
+}
+
+function renderSinglePermissionPath() {
+  if (permissionOverlayEl.hidden || permissionItems.length !== 1) return;
+  const namesEl = permissionPathEl.querySelector(".permission-path-names");
+  if (namesEl) renderEndOfPath(namesEl, displayPath(permissionItems[0].path));
 }
 
 function renderPermissionItems(items) {
@@ -2250,7 +2266,10 @@ permissionModeEl.addEventListener("input", () => {
 });
 permissionModeEl.addEventListener("change", validatePermissionMode);
 for (const checkbox of permissionChecks) checkbox.addEventListener("change", syncPermissionMode);
-window.addEventListener("resize", renderAddressPath);
+window.addEventListener("resize", () => {
+  renderAddressPath();
+  renderSinglePermissionPath();
+});
 window.addEventListener("popstate", event => {
   if (historyBlocked()) {
     writeHistoryPath(cwd, false);

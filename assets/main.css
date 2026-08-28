@@ -819,18 +819,32 @@ input[type="checkbox"] {
 }
 
 .pkg-info-panel {
-  width: 760px;
+  width: 1100px;
   height: auto;
   max-height: calc(100vh - 96px);
 }
 
-.pkg-info-image-stage {
-  height: 260px;
-  flex: 0 0 260px;
+.pkg-info-title {
+  margin: 0 0 18px;
+  color: #edf0f2;
+  font-size: 26px;
+  font-weight: 600;
+}
+
+.pkg-info-content {
+  min-height: 0;
   display: flex;
-  align-items: center;
-  justify-content: center;
+  flex: 1 1 auto;
   margin-bottom: 18px;
+}
+
+.pkg-info-image-stage {
+  width: 340px;
+  flex: 0 0 340px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  margin-right: 24px;
 }
 
 .pkg-info-image {
@@ -838,23 +852,17 @@ input[type="checkbox"] {
   width: auto;
   height: auto;
   max-width: 100%;
-  max-height: 260px;
+  max-height: 340px;
   pointer-events: none;
   -webkit-user-drag: none;
   user-select: none;
 }
 
-.pkg-info-title {
-  margin: 0 0 12px;
-  color: #edf0f2;
-  font-size: 26px;
-  font-weight: 600;
-}
-
 .pkg-info-fields {
+  min-width: 0;
   min-height: 80px;
   flex: 1 1 auto;
-  margin-bottom: 18px;
+  margin-bottom: 0;
   overflow-x: hidden;
   overflow-y: auto;
   border-top: 1px solid #2d343d;
@@ -1209,6 +1217,30 @@ input[type="checkbox"] {
 
 .task.canceled .progress-bar {
   background: #8a929b;
+}
+
+@media (max-width: 900px) {
+  .pkg-info-panel {
+    width: 760px;
+  }
+
+  .pkg-info-content {
+    display: block;
+  }
+
+  .pkg-info-image-stage {
+    width: auto;
+    height: 260px;
+    margin: 0 0 18px;
+  }
+
+  .pkg-info-image {
+    max-height: 260px;
+  }
+
+  .pkg-info-fields {
+    margin-bottom: 18px;
+  }
 }
 
 @media (max-width: 815px) {

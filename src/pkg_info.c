@@ -21,7 +21,9 @@
 #define PKG_ENTRY_SIZE 0x20
 #define PKG_ENTRY_PARAM_SFO 0x1000u
 #define PKG_ENTRY_ICON0_PNG 0x1200u
+#define PKG_ENTRY_ICON0_LOCALIZED_LAST 0x121fu
 #define PKG_ENTRY_PARAM_JSON 0x2000u
+#define PKG_ENTRY_FLAG_ENCRYPTED 0x80000000u
 #define PKG_ENTRY_MAX 65536u
 #define PKG_PARAM_MAX (4u * 1024u * 1024u)
 #define PKG_ICON_MAX (32u * 1024u * 1024u)
@@ -105,6 +107,23 @@ read_at(int fd, void *buffer, size_t size, uint64_t offset) {
   return 0;
 }
 
+static int
+png_signature_valid(const unsigned char *data, size_t size) {
+  static const unsigned char signature[] = "\x89PNG\r\n\x1a\n";
+
+  return size >= sizeof(signature) - 1 &&
+         !memcmp(data, signature, sizeof(signature) - 1);
+}
+
+static int
+pkg_icon_is_png(const pkg_source_t *pkg, uint64_t offset, uint32_t size) {
+  unsigned char signature[8];
+
+  return size >= sizeof(signature) &&
+         !read_at(pkg->fd, signature, sizeof(signature), offset) &&
+         png_signature_valid(signature, sizeof(signature));
+}
+
 static void
 pkg_source_close(pkg_source_t *pkg) {
   if(pkg->fd >= 0) close(pkg->fd);
@@ -163,19 +182,27 @@ pkg_source_open(const char *path, pkg_source_t *pkg) {
   for(uint32_t i = 0; i < entry_count; i++) {
     const unsigned char *entry = table + (size_t)i * PKG_ENTRY_SIZE;
     uint32_t id = read_be32(entry);
+    uint32_t flags1 = read_be32(entry + 0x08);
     uint32_t offset = read_be32(entry + 0x10);
     uint32_t size = read_be32(entry + 0x14);
+    int encrypted = (flags1 & PKG_ENTRY_FLAG_ENCRYPTED) != 0;
 
     if(!range_valid(offset, size, container_size)) goto done;
-    if(id == PKG_ENTRY_PARAM_SFO && size && size <= PKG_PARAM_MAX) {
+    if(encrypted || !size) continue;
+    if(id == PKG_ENTRY_PARAM_SFO && size <= PKG_PARAM_MAX) {
       pkg->param_offset = container_offset + offset;
       pkg->param_size = size;
       pkg->param_type = PKG_PARAM_SFO;
-    } else if(id == PKG_ENTRY_PARAM_JSON && size && size <= PKG_PARAM_MAX) {
+    } else if(id == PKG_ENTRY_PARAM_JSON && size <= PKG_PARAM_MAX) {
       pkg->param_offset = container_offset + offset;
       pkg->param_size = size;
       pkg->param_type = PKG_PARAM_JSON;
-    } else if(id == PKG_ENTRY_ICON0_PNG && size && size <= PKG_ICON_MAX) {
+    } else if(id >= PKG_ENTRY_ICON0_PNG &&
+              id <= PKG_ENTRY_ICON0_LOCALIZED_LAST &&
+              size <= PKG_ICON_MAX &&
+              (id == PKG_ENTRY_ICON0_PNG || !pkg->icon_size) &&
+              pkg_icon_is_png(pkg, container_offset + offset, size)) {
+      /* Prefer icon0.png; otherwise keep the first valid localized icon. */
       pkg->icon_offset = container_offset + offset;
       pkg->icon_size = size;
     }
@@ -192,27 +219,29 @@ done:
   return ret;
 }
 
-static void
+static int
 append_sfo_fields(strbuf_t *json, const unsigned char *sfo, size_t size) {
   uint32_t key_offset;
   uint32_t value_offset;
   uint32_t count;
+  uint64_t index_end;
   int first = 1;
 
-  strbuf_append(json, "[");
-  if(size < 20 || read_le32(sfo) != SFO_MAGIC) goto done;
+  if(size < 20 || read_le32(sfo) != SFO_MAGIC) return -1;
   key_offset = read_le32(sfo + 8);
   value_offset = read_le32(sfo + 12);
   count = read_le32(sfo + 16);
-  if(count > SFO_ENTRY_MAX ||
-     (uint64_t)20 + (uint64_t)count * SFO_ENTRY_SIZE > size ||
-     key_offset >= size || value_offset >= size) goto done;
+  index_end = 20 + (uint64_t)count * SFO_ENTRY_SIZE;
+  if(count > SFO_ENTRY_MAX || index_end > size || key_offset < index_end ||
+     value_offset < key_offset || value_offset > size) return -1;
 
+  strbuf_append(json, "[");
   for(uint32_t i = 0; i < count; i++) {
     const unsigned char *entry = sfo + 20 + (size_t)i * SFO_ENTRY_SIZE;
     uint16_t name_offset = read_le16(entry);
-    unsigned int type = entry[3];
+    uint16_t format = read_le16(entry + 2);
     uint32_t value_size = read_le32(entry + 4);
+    uint32_t value_max = read_le32(entry + 8);
     uint32_t data_offset = read_le32(entry + 12);
     uint64_t key_pos = (uint64_t)key_offset + name_offset;
     uint64_t value_pos = (uint64_t)value_offset + data_offset;
@@ -220,17 +249,18 @@ append_sfo_fields(strbuf_t *json, const unsigned char *sfo, size_t size) {
     char number[32];
     char *value = NULL;
 
-    if(key_pos >= size || value_pos > size) continue;
-    key_end = memchr(sfo + key_pos, 0, size - (size_t)key_pos);
+    if(key_pos >= value_offset || value_pos > size ||
+       (value_max && value_size > value_max)) continue;
+    key_end = memchr(sfo + key_pos, 0, value_offset - (size_t)key_pos);
     if(!key_end) continue;
-    if(type == 2) {
+    if(format == 0x0204) {
       size_t length;
       if(!value_size || !range_valid(value_pos, value_size, size)) continue;
       length = strnlen((const char *)sfo + value_pos, value_size);
       if(!(value = malloc(length + 1))) continue;
       memcpy(value, sfo + value_pos, length);
       value[length] = 0;
-    } else if(type == 4 && range_valid(value_pos, 4, size)) {
+    } else if(format == 0x0404 && range_valid(value_pos, 4, size)) {
       snprintf(number, sizeof(number), "%u", read_le32(sfo + value_pos));
       value = strdup(number);
     }
@@ -244,9 +274,8 @@ append_sfo_fields(strbuf_t *json, const unsigned char *sfo, size_t size) {
     strbuf_append(json, "}");
     free(value);
   }
-
-done:
   strbuf_append(json, "]");
+  return 0;
 }
 
 static int
@@ -428,6 +457,12 @@ append_param_json_fields(strbuf_t *json, const unsigned char *data,
                                 "titleName");
     }
     if(title < 0) {
+      int english = json_object_value(data, tokens, count, localized, "en-US");
+      if(english >= 0 && tokens[english].type == JSON_OBJECT) {
+        title = json_object_value(data, tokens, count, english, "titleName");
+      }
+    }
+    if(title < 0) {
       int item = json_next_child(tokens, count, localized,
                                  (size_t)localized + 1);
       while(item >= 0 && title < 0) {
@@ -493,22 +528,22 @@ api_pkg_info(struct MHD_Connection *conn) {
                 (unsigned long long)pkg.size);
   json_escape(&json, pkg.content_id);
   strbuf_printf(&json,
-                ",\"content_type\":%u,\"content_flags\":%u,"
-                "\"has_icon\":%s,\"fields\":",
+                ",\"platform\":\"%s\",\"content_type\":%u,"
+                "\"content_flags\":%u,\"has_icon\":%s,\"fields\":",
+                pkg.param_type == PKG_PARAM_JSON ? "PS5" : "PS4",
                 pkg.content_type, pkg.content_flags,
                 pkg.icon_size ? "true" : "false");
-  if(pkg.param_type == PKG_PARAM_JSON) {
-    if(append_param_json_fields(&json, param, pkg.param_size)) {
-      enum MHD_Result ret;
-      free(json.data);
-      ret = pkg_error(conn, path);
-      free(param);
-      pkg_source_close(&pkg);
-      free(path);
-      return ret;
-    }
-  } else {
-    append_sfo_fields(&json, param, pkg.param_size);
+  if((pkg.param_type == PKG_PARAM_JSON &&
+      append_param_json_fields(&json, param, pkg.param_size)) ||
+     (pkg.param_type == PKG_PARAM_SFO &&
+      append_sfo_fields(&json, param, pkg.param_size))) {
+    enum MHD_Result ret;
+    free(json.data);
+    ret = pkg_error(conn, path);
+    free(param);
+    pkg_source_close(&pkg);
+    free(path);
+    return ret;
   }
   strbuf_append(&json, "}");
 
@@ -533,7 +568,7 @@ api_pkg_icon(struct MHD_Connection *conn) {
     free(path);
     return send_json_error(conn, MHD_HTTP_NOT_FOUND, "package icon not found");
   }
-  if(pkg.icon_size < 8 || memcmp(icon, "\x89PNG\r\n\x1a\n", 8)) {
+  if(!png_signature_valid(icon, pkg.icon_size)) {
     free(icon);
     pkg_source_close(&pkg);
     free(path);

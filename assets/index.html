@@ -125,11 +125,13 @@
 
   <div id="pkgInfoOverlay" class="text-editor-overlay" hidden>
     <section class="text-editor-panel pkg-info-panel" role="dialog" aria-modal="true" aria-labelledby="pkgInfoTitle">
-      <div class="pkg-info-image-stage">
-        <img id="pkgInfoImage" class="pkg-info-image" src="/icon-pkg.png" alt="">
-      </div>
       <h2 id="pkgInfoTitle" class="pkg-info-title" data-i18n="pkgInfoTitle"></h2>
-      <div id="pkgInfoFields" class="pkg-info-fields"></div>
+      <div class="pkg-info-content">
+        <div class="pkg-info-image-stage">
+          <img id="pkgInfoImage" class="pkg-info-image" src="/icon-pkg.png" alt="">
+        </div>
+        <div id="pkgInfoFields" class="pkg-info-fields"></div>
+      </div>
       <div class="text-editor-actions">
         <button id="pkgInfoCloseBtn" class="secondary" data-i18n="close"></button>
         <button id="pkgInfoInstallBtn" class="primary" data-i18n="install"></button>
