@@ -12,6 +12,7 @@
 
 #include "asset.h"
 #include "filemgr.h"
+#include "upload_fast.h"
 #include "websrv.h"
 
 #define REQUEST_BODY_MAX (4 * 1024 * 1024)
@@ -39,6 +40,8 @@ typedef struct request_context {
   int too_large;
   int upload_stream;
   void *upload_ctx;
+  int fast_upload_stream;
+  void *fast_upload_ctx;
 } request_context_t;
 
 static enum MHD_Result
@@ -103,6 +106,7 @@ websrv_on_request(void *cls, struct MHD_Connection *conn, const char *url,
     }
     ctx->upload_stream = !strcmp(url, "/api/upload-file") &&
                          !strcmp(method, MHD_HTTP_METHOD_POST);
+    ctx->fast_upload_stream = fast_upload_is_chunk_request(url, method);
     *con_cls = ctx;
     return MHD_YES;
   }
@@ -117,6 +121,16 @@ websrv_on_request(void *cls, struct MHD_Connection *conn, const char *url,
       if(ctx->upload_ctx && filemgr_upload_data(ctx->upload_ctx, upload_data,
                                                 chunk_size)) {
         ctx->too_large = 1;
+      }
+      *upload_data_size = 0;
+      return MHD_YES;
+    }
+    if(ctx->fast_upload_stream) {
+      if(!ctx->fast_upload_ctx && fast_upload_begin(conn, &ctx->fast_upload_ctx)) {
+        return MHD_NO;
+      }
+      if(ctx->fast_upload_ctx) {
+        fast_upload_data(ctx->fast_upload_ctx, upload_data, chunk_size);
       }
       *upload_data_size = 0;
       return MHD_YES;
@@ -150,6 +164,19 @@ websrv_on_request(void *cls, struct MHD_Connection *conn, const char *url,
     }
     return filemgr_upload_finish(conn, ctx->upload_ctx);
   }
+  if(ctx->fast_upload_stream) {
+    if(!ctx->fast_upload_ctx && fast_upload_begin(conn, &ctx->fast_upload_ctx)) {
+      return MHD_NO;
+    }
+    return fast_upload_finish(conn, ctx->fast_upload_ctx);
+  }
+
+  if(!strcmp(url, "/api/upload-status")) {
+    return fast_upload_status(conn, method);
+  }
+  if(!strcmp(url, "/api/upload-complete")) {
+    return fast_upload_complete(conn, method);
+  }
 
   if(!strncmp(url, "/api/", 5)) {
     return filemgr_api_request(conn, url, method, ctx->body, ctx->size);
@@ -177,6 +204,9 @@ websrv_on_completed(void *cls, struct MHD_Connection *connection,
   if(ctx) {
     if(ctx->upload_ctx) {
       filemgr_upload_free(ctx->upload_ctx);
+    }
+    if(ctx->fast_upload_ctx) {
+      fast_upload_free(ctx->fast_upload_ctx);
     }
     free(ctx->body);
     free(ctx);

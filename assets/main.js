@@ -33,7 +33,7 @@ let extractItems = [];
 let pkgInfoItem = null;
 let pkgInfoRequestId = 0;
 let downloadFrame = null;
-let uploadXhr = null;
+let uploadXhrs = new Set();
 let uploadTerminalAbort = false;
 let L = {};
 
@@ -45,6 +45,8 @@ const LOADING_DISPLAY_DELAY = 250;
 const DOWNLOAD_OVERLAY_DISPLAY_DELAY = 1200;
 const SELECT_ALL_LOADING_THRESHOLD = 1000;
 const EXTRACT_NAME_LIMIT = 48;
+const UPLOAD_CHUNK_SIZE = 32 * 1024 * 1024;
+const UPLOAD_PARALLEL = 6;
 const ARCHIVE_FILE_RE = /\.(7z|001|zip|zipx|rar|arj|bz2|bzip2|tbz2?|cab|gz|gzip|tgz|tpz|lzh|lha|tar|xz|txz|z|taz|zst|tzst|xar|xip|cpio|lzma|pmd)$/i;
 const ARCHIVE_COMPOUND_SUFFIX_RE = /\.(tar\.(?:gz|bz2|xz|zst)|tbz2?|tgz|tpz|txz|taz|tzst)$/i;
 const ARCHIVE_SIMPLE_SUFFIX_RE = /\.(7z|zipx?|rar|arj|bz2|bzip2|cab|gz|gzip|lzh|lha|tar|xz|z|zst|xar|xip|cpio|lzma|pmd)$/i;
@@ -489,9 +491,9 @@ function clearTrackedTask() {
     downloadFrame.parentNode.removeChild(downloadFrame);
     downloadFrame = null;
   }
-  if (trackedTask && trackedTask.op === "upload" && uploadXhr) {
+  if (trackedTask && trackedTask.op === "upload" && uploadXhrs.size) {
     uploadTerminalAbort = true;
-    uploadXhr.abort();
+    for (const xhr of Array.from(uploadXhrs)) xhr.abort();
   }
   trackedTask = null;
 }
@@ -2125,7 +2127,7 @@ function renderTasks(tasks) {
       requestTaskCancel(task.id);
       api("/api/cancel", { id: task.id }).then(() => {
         if (task.op !== "upload") return pollTasks();
-        if (uploadXhr) uploadXhr.abort();
+        for (const xhr of Array.from(uploadXhrs)) xhr.abort();
         return api("/api/upload/finish", { task_id: task.id })
           .catch(() => {})
           .then(pollTasks);
@@ -2291,54 +2293,107 @@ function uploadConflicts(rels) {
   return conflicts;
 }
 
-function uploadFileRequest(taskId, file, rel, overwrite, index) {
+function uploadUrl(path, rel, file, taskId, overwrite, offset) {
+  const qs = new URLSearchParams({
+    path,
+    name: rel,
+    size: String(file.size),
+    chunk_size: String(UPLOAD_CHUNK_SIZE),
+    task_id: String(taskId),
+    overwrite: overwrite ? "1" : "0"
+  });
+  if (offset !== undefined) qs.set("offset", String(offset));
+  return "/api/" + (offset === undefined ? "upload-status" : "upload-chunk") + "?" + qs;
+}
+
+async function uploadState(path, rel, file, taskId, overwrite) {
+  const response = await fetch(uploadUrl(path, rel, file, taskId, overwrite));
+  const data = await response.json();
+  if (!response.ok || !data.ok) {
+    throw new Error(backendErrorText(data.error_code, data.error_arg, data.error));
+  }
+  return {
+    completed: new Set((data.completed || []).map(value => Number(value))),
+    totalChunks: Number(data.total_chunks || Math.ceil(file.size / UPLOAD_CHUNK_SIZE))
+  };
+}
+
+function uploadChunk(path, rel, file, taskId, overwrite, chunkIndex, onDone) {
   return new Promise((resolve, reject) => {
+    const offset = chunkIndex * UPLOAD_CHUNK_SIZE;
+    const size = Math.min(UPLOAD_CHUNK_SIZE, file.size - offset);
     const xhr = new XMLHttpRequest();
-    uploadXhr = xhr;
-    xhr.open("POST", "/api/upload-file", true);
+    uploadXhrs.add(xhr);
+    xhr.open("POST", uploadUrl(path, rel, file, taskId, overwrite, offset), true);
     xhr.setRequestHeader("Content-Type", "application/octet-stream");
-    xhr.setRequestHeader("X-WFM-Task-ID", String(taskId));
-    xhr.setRequestHeader("X-WFM-Path", encodeURIComponent(cwd));
-    xhr.setRequestHeader("X-WFM-Rel", encodeURIComponent(rel));
-    xhr.setRequestHeader("X-WFM-Size", String(file.size));
-    xhr.setRequestHeader("X-WFM-Overwrite", overwrite ? "1" : "0");
     xhr.onload = () => {
-      uploadXhr = null;
-      if (xhr.status >= 200 && xhr.status < 300) {
+      uploadXhrs.delete(xhr);
+      let data = null;
+      try { data = JSON.parse(xhr.responseText || "{}"); } catch (err) {}
+      if (xhr.status >= 200 && xhr.status < 300 && data && data.ok) {
+        onDone(chunkIndex, size);
         resolve();
-        return;
-      }
-      try {
-        const data = JSON.parse(xhr.responseText || "{}");
-        reject(new Error(backendErrorText(data.error_code, data.error_arg, data.error)));
-      } catch (err) {
-        reject(new Error(xhr.statusText || String(xhr.status)));
+      } else {
+        reject(new Error(data ? backendErrorText(data.error_code, data.error_arg, data.error) :
+          (xhr.statusText || String(xhr.status))));
       }
     };
     xhr.onerror = () => {
-      uploadXhr = null;
-      const error = new Error(xhr.statusText || t("backendError"));
-      api("/api/tasks").then(data => {
-        const task = (data.tasks || []).find(item => item.id === taskId);
-        if (task && Number(task.completed_count || 0) >= index) {
-          resolve();
-        } else if (task && task.state === "failed") {
-          reject(new Error(backendErrorText(task.error_code, task.error_arg,
-            task.error || task.current)));
-        } else {
-          reject(error);
-        }
-      }).catch(() => reject(error));
+      uploadXhrs.delete(xhr);
+      reject(new Error(xhr.statusText || t("backendError")));
     };
     xhr.onabort = () => {
-      uploadXhr = null;
+      uploadXhrs.delete(xhr);
       const terminal = uploadTerminalAbort;
       uploadTerminalAbort = false;
       const err = new Error("aborted");
       err.name = terminal ? "TerminalTaskAbort" : "AbortError";
       reject(err);
     };
-    xhr.send(file);
+    xhr.send(file.slice(offset, offset + size));
+  });
+}
+
+async function uploadFileRequest(taskId, file, rel, overwrite, index) {
+  const state = await uploadState(cwd, rel, file, taskId, overwrite);
+  const completed = new Set(state.completed);
+  const totalChunks = state.totalChunks;
+  let nextChunk = 0;
+  let active = 0;
+  let failed = false;
+
+  return new Promise((resolve, reject) => {
+    const schedule = () => {
+      if (failed) return;
+      while (active < UPLOAD_PARALLEL) {
+        while (nextChunk < totalChunks && completed.has(nextChunk)) nextChunk++;
+        if (nextChunk >= totalChunks) break;
+        const chunkIndex = nextChunk++;
+        active++;
+        uploadChunk(cwd, rel, file, taskId, overwrite, chunkIndex, (doneChunk) => {
+          completed.add(doneChunk);
+        }).then(() => {
+          active--;
+          schedule();
+        }).catch(err => {
+          if (failed) return;
+          failed = true;
+          for (const xhr of Array.from(uploadXhrs)) xhr.abort();
+          reject(err);
+        });
+      }
+      if (!failed && active === 0 && completed.size >= totalChunks) {
+        api("/api/upload-complete", {
+          path: cwd,
+          name: rel,
+          size: file.size,
+          chunk_size: UPLOAD_CHUNK_SIZE,
+          task_id: taskId,
+          overwrite: overwrite ? 1 : 0
+        }).then(() => resolve()).catch(reject);
+      }
+    };
+    schedule();
   });
 }
 
@@ -2420,7 +2475,7 @@ async function uploadFiles(files) {
       }
     }
   } finally {
-    uploadXhr = null;
+    uploadXhrs.clear();
     uploadFilesEl.value = "";
     uploadFolderEl.value = "";
     if (!trackedTask) setBusy(false);
