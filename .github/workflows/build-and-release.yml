@@ -1,0 +1,88 @@
+name: Build, Test & Release
+
+on:
+  push:
+    branches: [ main ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Test Frontend Actions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run Frontend Actions Test
+        run: |
+          node tests/frontend-actions.js
+
+  build-ps5:
+    name: Build PS5 Payload
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install build tools & LLVM
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config clang-15 lld-15 bash socat python3 wget
+
+      - name: Build & Install PS5 Payload SDK
+        run: |
+          git clone --recurse-submodules https://github.com/ps5-payload-dev/sdk.git ps5-sdk
+          cd ps5-sdk
+          make
+          sudo make DESTDIR=/opt/ps5-payload-sdk install
+
+      - name: Install libmicrohttpd dependency
+        run: |
+          export PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk
+          ./install-libmicrohttpd.sh
+
+      - name: Build web-file-mgr.elf
+        run: |
+          export PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk
+          make
+
+      - name: Upload ELF Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-file-mgr-elf
+          path: web-file-mgr.elf
+
+  release:
+    name: Auto Release
+    needs: [ test, build-ps5 ]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download PS5 ELF
+        uses: actions/download-artifact@v4
+        with:
+          name: web-file-mgr-elf
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            web-file-mgr.elf
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
