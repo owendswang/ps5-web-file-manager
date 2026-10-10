@@ -219,9 +219,12 @@ window.WFM_LANG = {
   err_destination_must_be_directory: "多个项目的目标必须是目录",
   err_system_error: "系统错误: {arg}",
   convertToFfpfsc: "转换为 .ffpfsc",
+  convertPackageTitle: "转换安装包",
   convertToSameFolder: "与安装包同一目录",
   convertCustomFolder: "自定义目标目录",
   convert: "转换",
+  formatFfpfsc: ".ffpfsc (ShadowMountPlus)",
+  formatExfat: ".exfat (磁盘映像)",
   convertStarting: "正在启动转换...",
   convertSpaceExtrapolateWarning: "警告：目标磁盘剩余空间可能不足或可能超限！\n预计需要：{required}\n当前可用空间：{available}\n\n是否仍然继续转换？",
   err_ultrapack_helper_not_running: "UltraPack helper 未在运行"

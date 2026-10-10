@@ -1768,6 +1768,10 @@ api_convert(struct MHD_Connection *conn, const char *body, size_t body_size) {
     result = send_json_error(conn, MHD_HTTP_BAD_REQUEST, "invalid path");
     goto done;
   }
+  if(smb_path(path) || smb_path(destination)) {
+    result = send_json_error(conn, MHD_HTTP_BAD_REQUEST, "SMB network shares are not supported for conversion");
+    goto done;
+  }
   if(format && format[0] && strcmp(format, "ffpfsc") && strcmp(format, "exfat")) {
     result = send_json_error(conn, MHD_HTTP_BAD_REQUEST, "unsupported format");
     goto done;

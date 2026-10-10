@@ -502,11 +502,11 @@ function taskElapsed(task) {
 }
 
 function opLabel(op) {
-  return { copy: t("copy"), move: t("move"), delete: t("delete"), chmod: t("permissionsTitle"), download: t("download"), upload: t("upload"), extract: t("extract"), pkg_install: t("installPackage") }[op] || op;
+  return { copy: t("copy"), move: t("move"), delete: t("delete"), chmod: t("permissionsTitle"), download: t("download"), upload: t("upload"), extract: t("extract"), convert: t("convert"), pkg_install: t("installPackage") }[op] || op;
 }
 
 function taskOpLabel(op) {
-  return { copy: t("copying"), move: t("moving"), delete: t("deleting"), chmod: t("changingPermissions"), download: t("downloading"), upload: t("uploading"), extract: t("extracting"), pkg_install: t("installPackage") }[op] || op;
+  return { copy: t("copying"), move: t("moving"), delete: t("deleting"), chmod: t("changingPermissions"), download: t("downloading"), upload: t("uploading"), extract: t("extracting"), convert: t("convertStarting"), pkg_install: t("installPackage") }[op] || op;
 }
 
 function isPlayStationBrowser() {
@@ -1871,7 +1871,7 @@ function renderExtractButton(items, locked) {
 }
 
 function renderConvertButton(items, locked) {
-  const pkgs = items.filter(isPkgPackage);
+  const pkgs = items.filter(isPkgPackage).filter(item => !item.path.startsWith("smb://"));
   convertBtn.hidden = pkgs.length !== 1;
   if (pkgs.length !== 1) {
     convertBtn.title = "";

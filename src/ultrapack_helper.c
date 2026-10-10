@@ -205,13 +205,57 @@ int ultrapack_helper_probe(void) {
   return ret;
 }
 
+#ifndef __linux__
+static int ultrapack_send_elf(const char *path) {
+  struct sockaddr_in address;
+  struct timeval timeout = {1, 0};
+  char buffer[65536];
+  int file_fd = -1;
+  int socket_fd = -1;
+  int result = -1;
+
+  if((file_fd = open(path, O_RDONLY)) < 0) return -1;
+  if(read(file_fd, buffer, 4) != 4 || memcmp(buffer, "\x7f" "ELF", 4)) {
+    errno = ENOEXEC;
+    goto done;
+  }
+  if(lseek(file_fd, 0, SEEK_SET) < 0) goto done;
+  if((socket_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) goto done;
+  setsockopt(socket_fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+  memset(&address, 0, sizeof(address));
+  address.sin_family = AF_INET;
+  address.sin_port = htons(WUP_ELFLDR_PORT);
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  if(connect(socket_fd, (struct sockaddr *)&address, sizeof(address))) goto done;
+
+  while(1) {
+    ssize_t count = read(file_fd, buffer, sizeof(buffer));
+    if(count < 0 && errno == EINTR) continue;
+    if(count < 0) goto done;
+    if(!count) break;
+    if(send_all(socket_fd, buffer, (size_t)count)) goto done;
+  }
+  shutdown(socket_fd, SHUT_WR);
+  result = 0;
+
+done:
+  if(socket_fd >= 0) close(socket_fd);
+  if(file_fd >= 0) close(file_fd);
+  return result;
+}
+#endif
+
 int ultrapack_helper_autostart(void) {
   if(!ultrapack_helper_probe()) return 0;
 #ifndef __linux__
-  /* Auto-load helper binary if present */
   struct stat st;
   if(!stat(WUP_HELPER_ELF, &st) && S_ISREG(st.st_mode)) {
-    /* Send to elfldr */
+    if(!ultrapack_send_elf(WUP_HELPER_ELF)) {
+      for(int i = 0; i < 10; i++) {
+        usleep(100000); /* 100ms */
+        if(!ultrapack_helper_probe()) return 0;
+      }
+    }
   }
 #endif
   return ultrapack_helper_probe();
@@ -222,6 +266,15 @@ int ultrapack_helper_convert(unsigned long job_id, const char *source,
                              const ultrapack_helper_callbacks_t *callbacks,
                              ultrapack_helper_result_t *result) {
   if(result) memset(result, 0, sizeof(*result));
+  if(!source || !destination || strchr(source, '\n') || strchr(destination, '\n') ||
+     (format && strchr(format, '\n'))) {
+    if(result) {
+      snprintf(result->code, sizeof(result->code), "invalid_path");
+      snprintf(result->message, sizeof(result->message), "Path or format contains newline");
+    }
+    return -1;
+  }
+
   int fd = connect_helper();
   if(fd < 0) {
     if(result) {
