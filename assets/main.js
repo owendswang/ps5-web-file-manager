@@ -1878,7 +1878,7 @@ function renderConvertButton(items, locked) {
     convertBtn.disabled = true;
     return;
   }
-  convertBtn.title = t("convertToFfpfsc") + ": " + displayName(pkgs[0]);
+  convertBtn.title = t("convertPackageTitle") + ": " + displayName(pkgs[0]);
   convertBtn.disabled = locked;
 }
 
