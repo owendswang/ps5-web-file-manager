@@ -216,6 +216,7 @@ window.WFM_LANG = {
   err_unknown_api: "Unknown API",
   err_out_of_memory: "Out of memory",
   err_no_source_paths: "No source paths",
+  err_destination_must_be_directory: "Destination must be a folder for multiple items",
   err_system_error: "System error: {arg}",
   convertToFfpfsc: "Convert to .ffpfsc",
   convertToSameFolder: "Same folder as package",

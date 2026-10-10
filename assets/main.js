@@ -129,6 +129,7 @@ const extractSeparateTextEl = document.getElementById("extractSeparateText");
 const extractCurrentEl = document.getElementById("extractCurrent");
 const extractCustomEl = document.getElementById("extractCustom");
 const extractCustomTextEl = document.getElementById("extractCustomText");
+const extractCustomPathEl = document.getElementById("extractCustomPath");
 const extractCancelBtn = document.getElementById("extractCancelBtn");
 const extractApplyBtn = document.getElementById("extractApplyBtn");
 const convertBtn = document.getElementById("convertBtn");
@@ -1526,12 +1527,18 @@ async function startConvertRequest(item, destination) {
 function submitConvertDialog() {
   if (!convertItem) return;
   const useCustom = convertDestCustomEl.checked;
+  if (useCustom && !convertCustomPathEl.value.trim()) {
+    convertCustomPathEl.focus();
+    return;
+  }
   const dest = useCustom ? convertCustomPathEl.value.trim() : cwd;
   const item = convertItem;
 
   // Space check: .ffpfsc generated file needs approximately 1.05x the PKG size
   const estimatedNeed = Math.ceil(Number(item.size || 0) * 1.05);
-  const targetSpace = lastSpaces.find(s => dest.startsWith(s.path) || (s.path === "/" && dest.startsWith("/")));
+  const targetSpace = lastSpaces
+    .filter(s => s.path && (s.path === "/" ? dest.startsWith("/") : (dest === s.path || dest.startsWith(s.path.replace(/\/+$/, "") + "/"))))
+    .sort((a, b) => b.path.length - a.path.length)[0];
   if (targetSpace && typeof targetSpace.free === "number") {
     if (targetSpace.free < estimatedNeed) {
       const msg = t("convertSpaceExtrapolateWarning", {

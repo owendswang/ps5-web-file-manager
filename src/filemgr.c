@@ -920,6 +920,7 @@ convert_task_worker(file_task_t *task) {
   ultrapack_helper_result_t result;
   extract_progress_context_t context;
 
+  memset(&result, 0, sizeof(result));
   memset(&context, 0, sizeof(context));
   context.task = task;
   memset(&callbacks, 0, sizeof(callbacks));

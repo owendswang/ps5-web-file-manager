@@ -221,6 +221,7 @@ int ultrapack_helper_convert(unsigned long job_id, const char *source,
                              const char *destination, const char *format,
                              const ultrapack_helper_callbacks_t *callbacks,
                              ultrapack_helper_result_t *result) {
+  if(result) memset(result, 0, sizeof(*result));
   int fd = connect_helper();
   if(fd < 0) {
     if(result) {
@@ -233,6 +234,10 @@ int ultrapack_helper_convert(unsigned long job_id, const char *source,
   char request[PATH_MAX * 2 + 128];
   snprintf(request, sizeof(request), "%s\n%s\n%s", source, destination, format ? format : "ffpfsc");
   if(send_frame(fd, WUP_MSG_CONVERT, job_id, request, (uint32_t)strlen(request))) {
+    if(result) {
+      snprintf(result->code, sizeof(result->code), "ultrapack_send_failed");
+      snprintf(result->message, sizeof(result->message), "failed to send conversion request to helper");
+    }
     close(fd);
     return -1;
   }
@@ -274,6 +279,10 @@ int ultrapack_helper_convert(unsigned long job_id, const char *source,
     }
   }
 
+  if(result && !result->code[0]) {
+    snprintf(result->code, sizeof(result->code), "ultrapack_helper_disconnected");
+    snprintf(result->message, sizeof(result->message), "connection to UltraPack helper was lost");
+  }
   close(fd);
   return -1;
 }
