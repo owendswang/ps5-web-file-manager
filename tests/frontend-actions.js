@@ -73,12 +73,15 @@ async function main() {
     if (url === '/api/convert') {
       assert.strictEqual(body.path, '/mnt/usb0/game.pkg');
       assert.strictEqual(body.destination, '/mnt/usb0');
-      assert.strictEqual(body.format, 'ffpfsc');
+      assert(body.format === 'ffpfsc' || body.format === 'exfat');
       convertSent = true;
       return { task_id: 42 };
     }
   };
-  await context.startConvertRequest({ name: 'game.pkg', path: '/mnt/usb0/game.pkg' }, '/mnt/usb0');
+  await context.startConvertRequest({ name: 'game.pkg', path: '/mnt/usb0/game.pkg' }, '/mnt/usb0', 'ffpfsc');
+  assert.strictEqual(convertSent, true);
+  convertSent = false;
+  await context.startConvertRequest({ name: 'game.pkg', path: '/mnt/usb0/game.pkg' }, '/mnt/usb0', 'exfat');
   assert.strictEqual(convertSent, true);
 
   console.log('Frontend actions OK');

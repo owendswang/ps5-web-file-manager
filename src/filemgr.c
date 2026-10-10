@@ -930,7 +930,8 @@ convert_task_worker(file_task_t *task) {
   callbacks.arg = &context;
   task_update(task, TASK_RUNNING, task->src, 0, NULL);
 
-  if(ultrapack_helper_convert(task->id, task->src, task->dst, "ffpfsc",
+  if(ultrapack_helper_convert(task->id, task->src, task->dst,
+                              task->convert_format[0] ? task->convert_format : "ffpfsc",
                               &callbacks, &result)) {
     if(task_cancel_requested(task)) {
       task_update(task, TASK_CANCELED, task->src, 0, "canceled");
@@ -1790,6 +1791,8 @@ api_convert(struct MHD_Connection *conn, const char *body, size_t body_size) {
     task->state = TASK_QUEUED;
     snprintf(task->src, sizeof(task->src), "%s", path);
     snprintf(task->dst, sizeof(task->dst), "%s", destination);
+    snprintf(task->convert_format, sizeof(task->convert_format), "%s",
+             format && format[0] ? format : "ffpfsc");
     task->created_at = time(NULL);
     task->updated_at = task->created_at;
 

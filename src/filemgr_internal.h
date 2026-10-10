@@ -55,6 +55,7 @@ typedef struct file_task {
   unsigned int chmod_mode;
   int recursive;
   int extract_overwrite;
+  char convert_format[32];
   unsigned long long total;
   unsigned long long done;
   unsigned long long speed;

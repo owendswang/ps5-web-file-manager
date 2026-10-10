@@ -140,6 +140,8 @@ const convertDestCustomEl = document.getElementById("convertDestCustom");
 const convertCustomPathEl = document.getElementById("convertCustomPath");
 const convertCancelBtn = document.getElementById("convertCancelBtn");
 const convertApplyBtn = document.getElementById("convertApplyBtn");
+const convertFormatFfpfscEl = document.getElementById("convertFormatFfpfsc");
+const convertFormatExfatEl = document.getElementById("convertFormatExfat");
 let convertItem = null;
 const permissionChecks = [
   document.getElementById("permissionOwnerRead"),
@@ -1504,7 +1506,7 @@ function closeConvertDialog() {
   setModalBackgroundLocked(false);
 }
 
-async function startConvertRequest(item, destination) {
+async function startConvertRequest(item, destination, format) {
   setBusy(true);
   setStatus(t("convertStarting"));
   taskRefreshPath = cwd;
@@ -1512,7 +1514,7 @@ async function startConvertRequest(item, destination) {
     const data = await apiForm("/api/convert", {
       path: item.path,
       destination: destination || cwd,
-      format: "ffpfsc"
+      format: format || "ffpfsc"
     });
     trackTask(data.task_id, "convert", false);
     clearSelection(false);
@@ -1533,8 +1535,9 @@ function submitConvertDialog() {
   }
   const dest = useCustom ? convertCustomPathEl.value.trim() : cwd;
   const item = convertItem;
+  const format = convertFormatExfatEl && convertFormatExfatEl.checked ? "exfat" : "ffpfsc";
 
-  // Space check: .ffpfsc generated file needs approximately 1.05x the PKG size
+  // Space check: generated file needs approximately 1.05x the PKG size
   const estimatedNeed = Math.ceil(Number(item.size || 0) * 1.05);
   const targetSpace = lastSpaces
     .filter(s => s.path && (s.path === "/" ? dest.startsWith("/") : (dest === s.path || dest.startsWith(s.path.replace(/\/+$/, "") + "/"))))
@@ -1550,7 +1553,7 @@ function submitConvertDialog() {
   }
 
   closeConvertDialog();
-  startConvertRequest(item, dest);
+  startConvertRequest(item, dest, format);
 }
 
 async function applyPermissionMode() {
