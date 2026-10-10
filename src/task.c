@@ -25,6 +25,7 @@ task_op_name(task_op_t op) {
   case TASK_UPLOAD: return "upload";
   case TASK_EXTRACT: return "extract";
   case TASK_PKG_INSTALL: return "pkg_install";
+  case TASK_CONVERT: return "convert";
   default: return "unknown";
   }
 }

@@ -217,5 +217,11 @@ window.WFM_LANG = {
   err_out_of_memory: "内存不足",
   err_no_source_paths: "没有源路径",
   err_destination_must_be_directory: "多个项目的目标必须是目录",
-  err_system_error: "系统错误: {arg}"
+  err_system_error: "系统错误: {arg}",
+  convertToFfpfsc: "转换为 .ffpfsc",
+  convertToSameFolder: "与安装包同一目录",
+  convertCustomFolder: "自定义目标目录",
+  convert: "转换",
+  convertStarting: "正在启动转换...",
+  err_ultrapack_helper_not_running: "UltraPack helper 未在运行"
 };

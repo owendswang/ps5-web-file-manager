@@ -18,6 +18,7 @@ typedef enum task_op {
   TASK_UPLOAD,
   TASK_EXTRACT,
   TASK_PKG_INSTALL,
+  TASK_CONVERT,
 } task_op_t;
 
 typedef enum task_state {
