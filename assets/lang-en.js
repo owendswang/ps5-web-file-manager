@@ -222,5 +222,6 @@ window.WFM_LANG = {
   convertCustomFolder: "Custom target folder",
   convert: "Convert",
   convertStarting: "Starting conversion...",
+  convertSpaceExtrapolateWarning: "Warning: Target disk space may be insufficient or extrapolated!\nEstimated required: {required}\nAvailable free space: {available}\n\nDo you want to continue anyway?",
   err_ultrapack_helper_not_running: "UltraPack helper is not running"
 };

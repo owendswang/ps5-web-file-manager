@@ -223,5 +223,6 @@ window.WFM_LANG = {
   convertCustomFolder: "自定义目标目录",
   convert: "转换",
   convertStarting: "正在启动转换...",
+  convertSpaceExtrapolateWarning: "警告：目标磁盘剩余空间可能不足或可能超限！\n预计需要：{required}\n当前可用空间：{available}\n\n是否仍然继续转换？",
   err_ultrapack_helper_not_running: "UltraPack helper 未在运行"
 };

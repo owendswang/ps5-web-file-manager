@@ -35,6 +35,7 @@ let pkgInfoRequestId = 0;
 let downloadFrame = null;
 let uploadXhr = null;
 let uploadTerminalAbort = false;
+let lastSpaces = [];
 let L = {};
 
 const APP_VERSION = "v1.10";
@@ -807,6 +808,7 @@ function fitSpaceOptions() {
 async function refreshSpaces() {
   try {
     const data = await api("/api/space", { path: cwd });
+    lastSpaces = data.spaces || [];
     const previousConnections = smbConnections;
     smbConnections = (data.spaces || []).filter(item => /^smb:\/\//.test(item.path || ""));
     for (const previous of previousConnections) {
@@ -1526,6 +1528,20 @@ function submitConvertDialog() {
   const useCustom = convertDestCustomEl.checked;
   const dest = useCustom ? convertCustomPathEl.value.trim() : cwd;
   const item = convertItem;
+
+  // Space check: .ffpfsc generated file needs approximately 1.05x the PKG size
+  const estimatedNeed = Math.ceil(Number(item.size || 0) * 1.05);
+  const targetSpace = lastSpaces.find(s => dest.startsWith(s.path) || (s.path === "/" && dest.startsWith("/")));
+  if (targetSpace && typeof targetSpace.free === "number") {
+    if (targetSpace.free < estimatedNeed) {
+      const msg = t("convertSpaceExtrapolateWarning", {
+        required: formatBytes(estimatedNeed, false),
+        available: formatBytes(targetSpace.free, false)
+      });
+      if (!confirm(msg)) return;
+    }
+  }
+
   closeConvertDialog();
   startConvertRequest(item, dest);
 }
