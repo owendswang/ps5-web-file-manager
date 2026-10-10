@@ -35,6 +35,7 @@ let pkgInfoRequestId = 0;
 let downloadFrame = null;
 let uploadXhr = null;
 let uploadTerminalAbort = false;
+let lastSpaces = [];
 let L = {};
 
 const APP_VERSION = "v1.10";
@@ -131,6 +132,17 @@ const extractCustomTextEl = document.getElementById("extractCustomText");
 const extractCustomPathEl = document.getElementById("extractCustomPath");
 const extractCancelBtn = document.getElementById("extractCancelBtn");
 const extractApplyBtn = document.getElementById("extractApplyBtn");
+const convertBtn = document.getElementById("convertBtn");
+const convertOverlayEl = document.getElementById("convertOverlay");
+const convertPathEl = document.getElementById("convertPath");
+const convertDestCurrentEl = document.getElementById("convertDestCurrent");
+const convertDestCustomEl = document.getElementById("convertDestCustom");
+const convertCustomPathEl = document.getElementById("convertCustomPath");
+const convertCancelBtn = document.getElementById("convertCancelBtn");
+const convertApplyBtn = document.getElementById("convertApplyBtn");
+const convertFormatFfpfscEl = document.getElementById("convertFormatFfpfsc");
+const convertFormatExfatEl = document.getElementById("convertFormatExfat");
+let convertItem = null;
 const permissionChecks = [
   document.getElementById("permissionOwnerRead"),
   document.getElementById("permissionOwnerWrite"),
@@ -490,11 +502,11 @@ function taskElapsed(task) {
 }
 
 function opLabel(op) {
-  return { copy: t("copy"), move: t("move"), delete: t("delete"), chmod: t("permissionsTitle"), download: t("download"), upload: t("upload"), extract: t("extract"), pkg_install: t("installPackage") }[op] || op;
+  return { copy: t("copy"), move: t("move"), delete: t("delete"), chmod: t("permissionsTitle"), download: t("download"), upload: t("upload"), extract: t("extract"), convert: t("convert"), pkg_install: t("installPackage") }[op] || op;
 }
 
 function taskOpLabel(op) {
-  return { copy: t("copying"), move: t("moving"), delete: t("deleting"), chmod: t("changingPermissions"), download: t("downloading"), upload: t("uploading"), extract: t("extracting"), pkg_install: t("installPackage") }[op] || op;
+  return { copy: t("copying"), move: t("moving"), delete: t("deleting"), chmod: t("changingPermissions"), download: t("downloading"), upload: t("uploading"), extract: t("extracting"), convert: t("convertStarting"), pkg_install: t("installPackage") }[op] || op;
 }
 
 function isPlayStationBrowser() {
@@ -799,6 +811,7 @@ function fitSpaceOptions() {
 async function refreshSpaces() {
   try {
     const data = await api("/api/space", { path: cwd });
+    lastSpaces = data.spaces || [];
     const previousConnections = smbConnections;
     smbConnections = (data.spaces || []).filter(item => /^smb:\/\//.test(item.path || ""));
     for (const previous of previousConnections) {
@@ -1471,6 +1484,78 @@ function submitExtractDialog() {
   startExtractRequest(request);
 }
 
+function openConvertDialog(item) {
+  if (busy || loadingPath || !item) return;
+  setModalBackgroundLocked(true);
+  convertItem = item;
+  convertPathEl.textContent = displayName(item);
+  convertPathEl.title = item.path;
+  convertDestCurrentEl.checked = true;
+  convertCustomPathEl.value = displayPath(cwd);
+  convertCustomPathEl.disabled = true;
+  convertOverlayEl.hidden = false;
+  convertApplyBtn.focus();
+}
+
+function closeConvertDialog() {
+  convertOverlayEl.hidden = true;
+  convertItem = null;
+  convertPathEl.textContent = "";
+  convertPathEl.title = "";
+  convertCustomPathEl.value = "";
+  setModalBackgroundLocked(false);
+}
+
+async function startConvertRequest(item, destination, format) {
+  setBusy(true);
+  setStatus(t("convertStarting"));
+  taskRefreshPath = cwd;
+  try {
+    const data = await apiForm("/api/convert", {
+      path: item.path,
+      destination: destination || cwd,
+      format: format || "ffpfsc"
+    });
+    trackTask(data.task_id, "convert", false);
+    clearSelection(false);
+    setStatus(t("taskCreated", { label: t("convert") }));
+    await pollTasks();
+  } catch (err) {
+    showActionFailed(t("convert"), err.message);
+    setBusy(false);
+  }
+}
+
+function submitConvertDialog() {
+  if (!convertItem) return;
+  const useCustom = convertDestCustomEl.checked;
+  if (useCustom && !convertCustomPathEl.value.trim()) {
+    convertCustomPathEl.focus();
+    return;
+  }
+  const dest = useCustom ? convertCustomPathEl.value.trim() : cwd;
+  const item = convertItem;
+  const format = convertFormatExfatEl && convertFormatExfatEl.checked ? "exfat" : "ffpfsc";
+
+  // Space check: generated file needs approximately 1.05x the PKG size
+  const estimatedNeed = Math.ceil(Number(item.size || 0) * 1.05);
+  const targetSpace = lastSpaces
+    .filter(s => s.path && (s.path === "/" ? dest.startsWith("/") : (dest === s.path || dest.startsWith(s.path.replace(/\/+$/, "") + "/"))))
+    .sort((a, b) => b.path.length - a.path.length)[0];
+  if (targetSpace && typeof targetSpace.free === "number") {
+    if (targetSpace.free < estimatedNeed) {
+      const msg = t("convertSpaceExtrapolateWarning", {
+        required: formatBytes(estimatedNeed, false),
+        available: formatBytes(targetSpace.free, false)
+      });
+      if (!confirm(msg)) return;
+    }
+  }
+
+  closeConvertDialog();
+  startConvertRequest(item, dest, format);
+}
+
 async function applyPermissionMode() {
   if (permissionBusy || !permissionItems.length || !validatePermissionMode()) return;
   const items = permissionItems.slice();
@@ -1785,6 +1870,18 @@ function renderExtractButton(items, locked) {
   extractBtn.disabled = locked;
 }
 
+function renderConvertButton(items, locked) {
+  const pkgs = items.filter(isPkgPackage).filter(item => !item.path.startsWith("smb://"));
+  convertBtn.hidden = pkgs.length !== 1;
+  if (pkgs.length !== 1) {
+    convertBtn.title = "";
+    convertBtn.disabled = true;
+    return;
+  }
+  convertBtn.title = t("convertToFfpfsc") + ": " + displayName(pkgs[0]);
+  convertBtn.disabled = locked;
+}
+
 function singleSelected() {
   const items = selectedEntries();
   return items.length === 1 ? items[0] : null;
@@ -1826,6 +1923,7 @@ function updateButtons() {
   selectAllEl.indeterminate = items.length > 0 && items.length < visibleCount;
   renderInstallPkgButton(items, locked);
   renderExtractButton(items, locked);
+  renderConvertButton(items, locked);
   renderClipboard();
 }
 
@@ -2947,6 +3045,23 @@ extractApplyBtn.addEventListener("click", submitExtractDialog);
 extractSeparateEl.addEventListener("change", () => syncExtractDestination(false));
 extractCurrentEl.addEventListener("change", () => syncExtractDestination(false));
 extractCustomEl.addEventListener("change", () => syncExtractDestination(true));
+convertBtn.addEventListener("click", () => {
+  const item = singleSelected();
+  if (item && isPkgPackage(item)) openConvertDialog(item);
+});
+convertCancelBtn.addEventListener("click", closeConvertDialog);
+convertApplyBtn.addEventListener("click", submitConvertDialog);
+convertDestCurrentEl.addEventListener("change", () => {
+  convertCustomPathEl.disabled = true;
+});
+convertDestCustomEl.addEventListener("change", () => {
+  convertCustomPathEl.disabled = false;
+  convertCustomPathEl.focus();
+  convertCustomPathEl.select();
+});
+convertOverlayEl.addEventListener("click", event => {
+  if (event.target === convertOverlayEl) closeConvertDialog();
+});
 permissionModeEl.addEventListener("input", () => {
   if (validPermissionMode(permissionModeEl.value)) syncPermissionChecks(permissionModeEl.value);
 });

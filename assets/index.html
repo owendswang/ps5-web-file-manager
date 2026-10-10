@@ -45,6 +45,7 @@
         <button id="downloadBtn" class="remote-only" data-i18n="download"></button>
         <button id="deleteBtn" class="danger" data-i18n="delete"></button>
         <button id="installPkgBtn" class="install-action" data-i18n="install" hidden></button>
+        <button id="convertBtn" class="install-action" data-i18n="convertToFfpfsc" hidden></button>
         <button id="extractBtn" class="install-action" data-i18n="extract" hidden></button>
         <button id="pasteBtn" class="paste-action" hidden>
           <span id="pasteVerb" data-i18n="paste"></span>
@@ -228,6 +229,40 @@
       <div class="permission-actions">
         <button id="extractCancelBtn" class="secondary" data-i18n="close"></button>
         <button id="extractApplyBtn" class="primary" data-i18n="extract"></button>
+      </div>
+    </section>
+  </div>
+
+  <div id="convertOverlay" class="permission-overlay" hidden>
+    <section class="permission-panel extract-panel" role="dialog" aria-modal="true" aria-labelledby="convertTitle">
+      <h2 id="convertTitle" class="permission-title" data-i18n="convertPackageTitle"></h2>
+      <div id="convertPath" class="permission-path"></div>
+      <div class="extract-options">
+        <label class="extract-option">
+          <input id="convertDestCurrent" name="convertDestination" type="radio" value="current" checked>
+          <span data-i18n="convertToSameFolder"></span>
+        </label>
+        <div class="extract-option extract-custom-option">
+          <label class="extract-custom-choice">
+            <input id="convertDestCustom" name="convertDestination" type="radio" value="custom">
+            <span data-i18n="convertCustomFolder"></span>
+          </label>
+          <input id="convertCustomPath" class="extract-custom-path" type="text" autocomplete="off" spellcheck="false" disabled>
+        </div>
+      </div>
+      <div class="extract-options" style="margin-top: 10px;">
+        <label class="extract-option">
+          <input id="convertFormatFfpfsc" name="convertFormat" type="radio" value="ffpfsc" checked>
+          <span data-i18n="formatFfpfsc"></span>
+        </label>
+        <label class="extract-option">
+          <input id="convertFormatExfat" name="convertFormat" type="radio" value="exfat">
+          <span data-i18n="formatExfat"></span>
+        </label>
+      </div>
+      <div class="permission-actions">
+        <button id="convertCancelBtn" class="secondary" data-i18n="close"></button>
+        <button id="convertApplyBtn" class="primary" data-i18n="convert"></button>
       </div>
     </section>
   </div>
