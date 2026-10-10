@@ -23,6 +23,7 @@
 #include "filemgr_internal.h"
 #include "archive_extract.h"
 #include "archive_helper.h"
+#include "ultrapack_helper.h"
 #include "json_util.h"
 #include "path_util.h"
 #include "pkg_info.h"
@@ -914,6 +915,46 @@ extract_task_worker(file_task_t *task) {
 }
 
 static void *
+convert_task_worker(file_task_t *task) {
+  ultrapack_helper_callbacks_t callbacks;
+  ultrapack_helper_result_t result;
+  extract_progress_context_t context;
+
+  memset(&result, 0, sizeof(result));
+  memset(&context, 0, sizeof(context));
+  context.task = task;
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.cancel_requested = extract_cancel_requested;
+  callbacks.progress = extract_progress;
+  callbacks.current_file = extract_current_file;
+  callbacks.arg = &context;
+  task_update(task, TASK_RUNNING, task->src, 0, NULL);
+
+  if(ultrapack_helper_convert(task->id, task->src, task->dst,
+                              task->convert_format[0] ? task->convert_format : "ffpfsc",
+                              &callbacks, &result)) {
+    if(task_cancel_requested(task)) {
+      task_update(task, TASK_CANCELED, task->src, 0, "canceled");
+    } else {
+      task_set_error_code(task, result.code[0] ? result.code : "convert_failed", NULL);
+      task_update(task, TASK_FAILED, task->src, 0,
+                  result.message[0] ? result.message : "conversion failed");
+    }
+    return NULL;
+  }
+  {
+    time_t completed_at = time(NULL);
+    pthread_mutex_lock(&g_tasks_lock);
+    task->state = TASK_DONE;
+    if(task->total) task->done = task->total;
+    task->updated_at = completed_at;
+    record_task_completion_locked(task, completed_at);
+    pthread_mutex_unlock(&g_tasks_lock);
+  }
+  return NULL;
+}
+
+static void *
 task_worker(void *arg) {
   file_task_t *task = arg;
   unsigned long long total = 0;
@@ -928,6 +969,9 @@ task_worker(void *arg) {
   }
   if(task->op == TASK_EXTRACT) {
     return extract_task_worker(task);
+  }
+  if(task->op == TASK_CONVERT) {
+    return convert_task_worker(task);
   }
   if(task->op == TASK_COPY || task->op == TASK_MOVE) {
     char error[160] = {0};
@@ -1713,6 +1757,85 @@ done:
 }
 
 static enum MHD_Result
+api_convert(struct MHD_Connection *conn, const char *body, size_t body_size) {
+  char *path = fs_path_value(body_form_value(body, body_size, "path"));
+  char *destination = fs_path_value(body_form_value(body, body_size, "destination"));
+  char *format = body_form_value(body, body_size, "format");
+  struct stat st;
+  enum MHD_Result result;
+
+  if(!path || path[0] != '/' || !destination || destination[0] != '/') {
+    result = send_json_error(conn, MHD_HTTP_BAD_REQUEST, "invalid path");
+    goto done;
+  }
+  if(smb_path(path) || smb_path(destination)) {
+    result = send_json_error_detail(conn, MHD_HTTP_BAD_REQUEST,
+                                   "SMB network shares are not supported for conversion",
+                                   "smb_not_supported", NULL);
+    goto done;
+  }
+  if(format && format[0] && strcmp(format, "ffpfsc") && strcmp(format, "exfat")) {
+    result = send_json_error(conn, MHD_HTTP_BAD_REQUEST, "unsupported format");
+    goto done;
+  }
+  if(lstat(path, &st) || !S_ISREG(st.st_mode)) {
+    result = send_json_error_detail(conn, MHD_HTTP_NOT_FOUND, "package file not found",
+                                   "file_not_found", path);
+    goto done;
+  }
+  if(ultrapack_helper_autostart()) {
+    result = send_json_error_detail(conn, MHD_HTTP_SERVICE_UNAVAILABLE,
+                                   "UltraPack helper is not running",
+                                   "ultrapack_helper_not_running", NULL);
+    goto done;
+  }
+  {
+    file_task_t *task = calloc(1, sizeof(*task));
+    strbuf_t response = {0};
+
+    if(!task) {
+      result = send_json_error(conn, MHD_HTTP_INTERNAL_SERVER_ERROR, "out of memory");
+      goto done;
+    }
+    task->op = TASK_CONVERT;
+    task->state = TASK_QUEUED;
+    snprintf(task->src, sizeof(task->src), "%s", path);
+    snprintf(task->dst, sizeof(task->dst), "%s", destination);
+    snprintf(task->convert_format, sizeof(task->convert_format), "%s",
+             format && format[0] ? format : "ffpfsc");
+    task->created_at = time(NULL);
+    task->updated_at = task->created_at;
+
+    pthread_mutex_lock(&g_tasks_lock);
+    remove_finished_tasks_locked();
+    if(has_active_task_locked()) {
+      pthread_mutex_unlock(&g_tasks_lock);
+      free_task(task);
+      result = send_json_error(conn, MHD_HTTP_CONFLICT, "another task is running");
+      goto done;
+    }
+    task->id = g_next_task_id++;
+    task->next = g_tasks;
+    g_tasks = task;
+    pthread_mutex_unlock(&g_tasks_lock);
+
+    if(pthread_create(&task->thread, NULL, task_worker, task)) {
+      task_update(task, TASK_FAILED, NULL, 0, "pthread_create failed");
+    } else {
+      pthread_detach(task->thread);
+    }
+    strbuf_printf(&response, "{\"ok\":true,\"task_id\":%lu}", task->id);
+    result = send_buffer(conn, MHD_HTTP_OK, response.data, "application/json");
+  }
+
+done:
+  free(path);
+  free(destination);
+  free(format);
+  return result;
+}
+
+static enum MHD_Result
 api_chmod(struct MHD_Connection *conn, const char *body, size_t body_size) {
   char *paths_raw = body_form_value(body, body_size, "paths");
   char *mode_text = body_form_value(body, body_size, "mode");
@@ -1959,6 +2082,11 @@ filemgr_api_request(struct MHD_Connection *conn, const char *url,
     return strcmp(method, MHD_HTTP_METHOD_POST) ?
       send_json_error(conn, MHD_HTTP_METHOD_NOT_ALLOWED, "invalid method") :
       api_extract(conn, body, body_size);
+  }
+  if(!strcmp(url, "/api/convert")) {
+    return strcmp(method, MHD_HTTP_METHOD_POST) ?
+      send_json_error(conn, MHD_HTTP_METHOD_NOT_ALLOWED, "invalid method") :
+      api_convert(conn, body, body_size);
   }
   if(!strcmp(url, "/api/pkg-info")) {
     return strcmp(method, MHD_HTTP_METHOD_GET) ?

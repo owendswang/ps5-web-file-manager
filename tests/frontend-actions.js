@@ -9,6 +9,7 @@ function load(start, end) {
 }
 load('async function readDroppedDirectory', 'function actionUploadFiles');
 load('function isElfFile', 'function isSupportedArchive');
+load('async function startConvertRequest', 'async function applyPermissionMode');
 load('function launchElf', 'function openImagePreview');
 context.uploadRelativeName = file => file.webkitRelativePath || file.name;
 context.uploadFiles = async (files, paths) => {
@@ -52,6 +53,40 @@ async function main() {
   context.confirm = () => true;
   context.launchElf(payload);
   assert.strictEqual(sends, 1);
+
+  // Test PKG recognition and convert action
+  context.isPkgPackage = item => item.type === '-' && /\.pkg$/i.test(item.name);
+  assert(context.isPkgPackage({ type: '-', name: 'game.PKG' }));
+  assert(!context.isPkgPackage({ type: 'd', name: 'game.pkg' }));
+  assert(!context.isPkgPackage({ type: '-', name: 'game.ffpfsc' }));
+
+  let convertSent = false;
+  context.cwd = '/mnt/usb0';
+  context.setBusy = () => {};
+  context.trackTask = (id, op) => {
+    assert.strictEqual(op, 'convert');
+  };
+  context.clearSelection = () => {};
+  context.setStatus = () => {};
+  context.pollTasks = async () => {};
+  context.showActionFailed = () => {};
+  let expectedFormat = 'ffpfsc';
+  context.apiForm = async (url, body) => {
+    if (url === '/api/convert') {
+      assert.strictEqual(body.path, '/mnt/usb0/game.pkg');
+      assert.strictEqual(body.destination, '/mnt/usb0');
+      assert.strictEqual(body.format, expectedFormat);
+      convertSent = true;
+      return { task_id: 42 };
+    }
+  };
+  await context.startConvertRequest({ name: 'game.pkg', path: '/mnt/usb0/game.pkg' }, '/mnt/usb0', 'ffpfsc');
+  assert.strictEqual(convertSent, true);
+  convertSent = false;
+  expectedFormat = 'exfat';
+  await context.startConvertRequest({ name: 'game.pkg', path: '/mnt/usb0/game.pkg' }, '/mnt/usb0', 'exfat');
+  assert.strictEqual(convertSent, true);
+
   console.log('Frontend actions OK');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

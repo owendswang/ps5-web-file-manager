@@ -40,7 +40,8 @@ PS5 web file manager payload. It runs an HTTP UI starting at port `8888`, instal
 - Home screen launcher icon and browser favicon use the same embedded `icon0.png` data in the PS5 build to avoid storing the icon twice in the ELF.
 - Create/edit text files ending with `.txt`, `.json`, `.xml`, `.ini`, `.cfg`, `.conf`, `.md`, `.log`, `.lua`, `.js`, `.css`, `.html`, `.htm`, `.c`, `.h`, `.cpp`, `.hpp`, `.sh`, `.csv`, `.yaml`, `.yml`, `.shn`.
 - Preview image files ending with `.png`, `.jpg`, `.jpeg`, `.gif`, `.bmp`, `.webp`.
-- Install/Preview PKG files ends with `.pkg`.
+- Preview/Install PKG files ending with `.pkg`.
+- Convert PKG files ending with `.pkg` to compressed `.ffpfsc` containers (for ShadowMountPlus) directly on the console with zero intermediate disk staging. Uses pre-flight space warnings and delegates streaming conversions to the companion [`wfm-ultrapack-helper.elf` daemon](https://github.com/ymatrix1/wfm-ultrapack-helper) at `/data/wfm/wfm-ultrapack-helper.elf`.
 - Launch payload files ending with `.elf` by sending them to the ELF loader at `localhost:9021` after confirmation.
 
 ## Build

@@ -217,5 +217,16 @@ window.WFM_LANG = {
   err_out_of_memory: "Out of memory",
   err_no_source_paths: "No source paths",
   err_destination_must_be_directory: "Destination must be a folder for multiple items",
-  err_system_error: "System error: {arg}"
+  err_system_error: "System error: {arg}",
+  convertToFfpfsc: "Convert to .ffpfsc",
+  convertPackageTitle: "Convert Package",
+  convertToSameFolder: "Same folder as package",
+  convertCustomFolder: "Custom target folder",
+  convert: "Convert",
+  formatFfpfsc: ".ffpfsc (ShadowMountPlus)",
+  formatExfat: ".exfat (Disk Image)",
+  convertStarting: "Starting conversion...",
+  convertSpaceExtrapolateWarning: "Warning: Target disk space may be insufficient or extrapolated!\nEstimated required: {required}\nAvailable free space: {available}\n\nDo you want to continue anyway?",
+  err_ultrapack_helper_not_running: "UltraPack helper is not running",
+  err_smb_not_supported: "SMB network shares are not supported for conversion"
 };
