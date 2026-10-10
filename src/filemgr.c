@@ -1769,7 +1769,9 @@ api_convert(struct MHD_Connection *conn, const char *body, size_t body_size) {
     goto done;
   }
   if(smb_path(path) || smb_path(destination)) {
-    result = send_json_error(conn, MHD_HTTP_BAD_REQUEST, "SMB network shares are not supported for conversion");
+    result = send_json_error_detail(conn, MHD_HTTP_BAD_REQUEST,
+                                   "SMB network shares are not supported for conversion",
+                                   "smb_not_supported", NULL);
     goto done;
   }
   if(format && format[0] && strcmp(format, "ffpfsc") && strcmp(format, "exfat")) {
