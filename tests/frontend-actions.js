@@ -69,11 +69,13 @@ async function main() {
   context.clearSelection = () => {};
   context.setStatus = () => {};
   context.pollTasks = async () => {};
+  context.showActionFailed = () => {};
+  let expectedFormat = 'ffpfsc';
   context.apiForm = async (url, body) => {
     if (url === '/api/convert') {
       assert.strictEqual(body.path, '/mnt/usb0/game.pkg');
       assert.strictEqual(body.destination, '/mnt/usb0');
-      assert(body.format === 'ffpfsc' || body.format === 'exfat');
+      assert.strictEqual(body.format, expectedFormat);
       convertSent = true;
       return { task_id: 42 };
     }
@@ -81,6 +83,7 @@ async function main() {
   await context.startConvertRequest({ name: 'game.pkg', path: '/mnt/usb0/game.pkg' }, '/mnt/usb0', 'ffpfsc');
   assert.strictEqual(convertSent, true);
   convertSent = false;
+  expectedFormat = 'exfat';
   await context.startConvertRequest({ name: 'game.pkg', path: '/mnt/usb0/game.pkg' }, '/mnt/usb0', 'exfat');
   assert.strictEqual(convertSent, true);
 

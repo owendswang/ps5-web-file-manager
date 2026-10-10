@@ -1768,6 +1768,10 @@ api_convert(struct MHD_Connection *conn, const char *body, size_t body_size) {
     result = send_json_error(conn, MHD_HTTP_BAD_REQUEST, "invalid path");
     goto done;
   }
+  if(format && format[0] && strcmp(format, "ffpfsc") && strcmp(format, "exfat")) {
+    result = send_json_error(conn, MHD_HTTP_BAD_REQUEST, "unsupported format");
+    goto done;
+  }
   if(lstat(path, &st) || !S_ISREG(st.st_mode)) {
     result = send_json_error_detail(conn, MHD_HTTP_NOT_FOUND, "package file not found",
                                    "file_not_found", path);
