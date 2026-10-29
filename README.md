@@ -42,6 +42,7 @@ PS5 web file manager payload. It runs an HTTP UI starting at port `8888`, regist
 - Preview image files ending with `.png`, `.jpg`, `.jpeg`, `.gif`, `.bmp`, `.webp`.
 - Install/Preview PKG files ends with `.pkg`.
 - Launch payload files ending with `.elf` by sending them to the ELF loader at `localhost:9021` after confirmation.
+- Toggle the PS5 browser between fullscreen and its ordinary layout from the top-right button. The browser reopens the current folder.
 
 ## Build
 
@@ -50,6 +51,8 @@ It depends on PS5 payload SDK first: [ps5-payload-dev/sdk](https://github.com/ps
 ```sh
 export PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk
 ```
+
+Initialize the pinned dependencies with `git submodule update --init --recursive`.
 
 This project uses `libmicrohttpd` for HTTP and `libsmb2` for SMB. `make` checks for `libmicrohttpd` before building and runs the installer script automatically if it is missing:
 
@@ -116,7 +119,7 @@ On startup the payload registers a `PS5 Web File Manager` web shortcut in the Me
 - File names are transmitted as UTF-8 through the web API. The payload also attempts to preserve legacy byte-oriented names returned by mounted filesystems so mixed USB filename encodings can still be displayed and operated on.
 
 ## FAQ
-- This is a homebrew app and should not intentionally modify system processes or kernel memory. If a kernel panic happens, make sure you are using a recent jailbreak method and ELF loader, or switch back to the stable method you normally use.
+- The optional fullscreen button patches browser layout in RAM; it does not replace system files.
 - If you are using P2JB and this payload causes a kernel panic, avoid using it with that setup. Stability matters more than convenience when each retry takes a long time.
 - The preparing stage may calculate folder size and check available space. It can be slow when a folder contains many files, but it helps prevent starting a copy, move, upload, or download operation that cannot be completed safely.
 
@@ -128,7 +131,8 @@ This project was built with reference to these projects:
 - **[itsPLK/ps5-pkg-manager](https://github.com/itsPLK/ps5-pkg-manager):** HTTP PKG streaming, byte-range handling and installation metadata/icon URL reference. License: GPLv3.
 - **[ps5-payload-dev/ftpsrv](https://github.com/ps5-payload-dev/ftpsrv):** PS5 payload conventions, home screen launcher/install flow reference, process handling style and startup installation reference. License: GPLv3+.
 - **[seregonwar/zftpd](https://github.com/seregonwar/zftpd):** PS5 TCP socket buffer tuning and high-throughput transfer behavior reference. License: MIT.
-- **[itsPLK/ps5-payload-manager](https://github.com/itsPLK/ps5-payload-manager):** Payload building behavior. License: GPLv3.
+- **[itsPLK/ps5-payload-manager](https://github.com/itsPLK/ps5-payload-manager):** Payload building behavior and native browser launch reference. License: GPLv3.
+- **[owendswang/ps5-web-browser-fullscreen](https://github.com/owendswang/ps5-web-browser-fullscreen):** Browser fullscreen/restore implementation, including test-mode discovery and INI diagnostics. License: GPLv3+.
 - **[libmicrohttpd](https://ftp.gnu.org/gnu/libmicrohttpd/):** Used as the embedded HTTP server library. It is licensed by GNU under the LGPL; this payload links it as the SDK-provided static library.
 - **[libsmb2](https://github.com/sahlberg/libsmb2):** SMB2/3 client library. License: LGPLv2.1.
 - **[ps5-payload-dev/sdk](https://github.com/ps5-payload-dev/sdk):** Payload building foundation. License: GPLv3+.

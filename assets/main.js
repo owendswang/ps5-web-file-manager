@@ -38,7 +38,7 @@ let uploadXhr = null;
 let uploadTerminalAbort = false;
 let L = {};
 
-const APP_VERSION = "v1.12b";
+const APP_VERSION = "v1.13";
 const SMB_PASSWORD_KEY = "ps5-web-file-mgr:smb-password:";
 const smbPasswords = {};
 const smbReady = {};
@@ -108,6 +108,8 @@ const uploadFolderEl = document.getElementById("uploadFolder");
 const dropUploadOverlayEl = document.getElementById("dropUploadOverlay");
 const initLoadingEl = document.getElementById("initLoading");
 const exitBtn = document.getElementById("exitBtn");
+const fullscreenBtn = document.getElementById("fullscreenBtn");
+let browserLayoutPending = false;
 const textEditorOverlayEl = document.getElementById("textEditorOverlay");
 const textEditorPathEl = document.getElementById("textEditorPath");
 const textEditorEl = document.getElementById("textEditor");
@@ -219,6 +221,9 @@ function applyStaticText() {
   }
   exitBtn.title = t("exit");
   exitBtn.setAttribute("aria-label", t("exit"));
+  document.documentElement.classList.toggle("ps5-browser", isPlayStationBrowser());
+  fullscreenBtn.hidden = !isPlayStationBrowser();
+  updateFullscreenButton();
   parentBtn.title = t("parent");
   parentBtn.setAttribute("aria-label", t("parent"));
   versionEl.textContent = APP_VERSION;
@@ -1946,6 +1951,7 @@ function updateButtons() {
   nameFilterBtn.disabled = locked;
   parentBtn.disabled = locked || parentPath(cwd) === cwd;
   exitBtn.disabled = locked;
+  fullscreenBtn.disabled = locked;
   const visibleCount = visibleEntries().length;
   selectAllEl.checked = visibleCount > 0 && items.length === visibleCount;
   selectAllEl.indeterminate = items.length > 0 && items.length < visibleCount;
@@ -3037,6 +3043,35 @@ function toggleUploadMenu() {
   uploadMenuEl.classList.toggle("open");
 }
 
+function browserIsFullscreen() {
+  return window.innerWidth === 1920 && window.innerHeight === 1080;
+}
+
+function updateFullscreenButton() {
+  const restore = browserIsFullscreen();
+  const label = t(restore ? "restoreWindow" : "fullscreen");
+  fullscreenBtn.classList.toggle("restore", restore);
+  fullscreenBtn.title = label;
+  fullscreenBtn.setAttribute("aria-label", label);
+}
+
+async function actionFullscreen() {
+  if (!isPlayStationBrowser() || backgroundInteractionLocked() || browserLayoutPending) return;
+  const restore = browserIsFullscreen();
+  browserLayoutPending = true;
+  try {
+    await apiForm("/api/browser/layout", {
+      restore: restore ? "1" : "0",
+      lang: document.documentElement.lang,
+      hash: "#" + encodeURIComponent(cwd)
+    });
+  } catch (err) {
+    showActionFailed(t(restore ? "restoreWindow" : "fullscreen"), err.message);
+  } finally {
+    browserLayoutPending = false;
+  }
+}
+
 function actionExit() {
   if (!confirm(t("exitConfirm"))) return;
   setStatus(t("exiting"));
@@ -3070,6 +3105,8 @@ uploadFilesEl.addEventListener("change", () => uploadFiles(uploadFilesEl.files))
 uploadFolderEl.addEventListener("change", () => uploadFiles(uploadFolderEl.files));
 if (!isPlayStationBrowser()) setupDropUpload();
 exitBtn.addEventListener("click", actionExit);
+fullscreenBtn.addEventListener("click", actionFullscreen);
+window.addEventListener("resize", updateFullscreenButton);
 versionEl.addEventListener("click", () => {
   if (backgroundInteractionLocked()) return;
   setModalBackgroundLocked(true);
@@ -3080,7 +3117,8 @@ Credits:
 ps5-payload-dev/websrv, ps5-payload-dev/ftpsrv,
 seregonwar/zftpd, itsPLK/ps5-payload-manager,
 itsPLK/ps5-pkg-manager, libmicrohttpd, libsmb2,
-ps5-payload-dev/sdk, etaHEN, ezremote.
+ps5-payload-dev/sdk, etaHEN, ezremote,
+owendswang/ps5-web-browser-fullscreen.
 
 License:
 GPLv3 or later. Third-party licenses apply; libmicrohttpd and libsmb2 are LGPL.`;
