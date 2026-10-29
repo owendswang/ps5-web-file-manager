@@ -38,7 +38,7 @@ let uploadXhr = null;
 let uploadTerminalAbort = false;
 let L = {};
 
-const APP_VERSION = "v1.12";
+const APP_VERSION = "v1.12b";
 const SMB_PASSWORD_KEY = "ps5-web-file-mgr:smb-password:";
 const smbPasswords = {};
 const smbReady = {};

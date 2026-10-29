@@ -641,6 +641,16 @@ move_path(file_task_t *task, const char *src, const char *dst) {
   }
 
   ret = rename(src, dst);
+  if(ret && errno == ENOENT && !smb_path(src) && !smb_path(dst)) {
+    /* PS5 USB lookup can briefly fail for an existing Unicode directory.
+       Refresh the lookups and retry once only if no target would be replaced. */
+    char parent[PATH_MAX];
+    if(!lstat(src, &src_st) && !path_dirname(dst, parent, sizeof(parent)) &&
+       !stat(parent, &dst_st) && S_ISDIR(dst_st.st_mode) &&
+       lstat(dst, &dst_st) && errno == ENOENT) {
+      ret = rename(src, dst);
+    } else errno = ENOENT;
+  }
   if(ret && errno == EXDEV) {
     ret = copy_path(task, src, dst);
     if(!ret) {
