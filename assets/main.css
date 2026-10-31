@@ -81,6 +81,10 @@ body {
   text-align: right;
 }
 
+.ps5-browser .top-right {
+  padding-right: 74px;
+}
+
 .path {
   color: #aab4be;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -227,11 +231,28 @@ body {
   transform: translateX(-50%);
 }
 
-#exitBtn {
+#exitBtn,
+#fullscreenBtn {
   position: absolute;
-  top: 15px;
-  right: 18px;
+  top: 50%;
   margin-left: 0;
+  transform: translateY(-50%);
+}
+
+#exitBtn {
+  right: 18px;
+}
+
+#fullscreenBtn {
+  right: 52px;
+  background-image: url("/icon-fullscreen.png");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 16px 16px;
+}
+
+#fullscreenBtn.restore {
+  background-image: url("/icon-restore.png");
 }
 
 .toolbar,
@@ -1631,6 +1652,14 @@ input[type="checkbox"] {
     align-items: flex-end;
   }
 
+  .ps5-browser .top-right {
+    padding-right: 0;
+  }
+
+  .ps5-browser .top-left {
+    padding-right: 68px;
+  }
+
   .top-right .space-add {
     margin-right: 8px;
     padding: 0 6px;
@@ -1650,9 +1679,17 @@ input[type="checkbox"] {
     line-height: 42px;
   }
 
+  #exitBtn,
+  #fullscreenBtn {
+    top: 21px;
+  }
+
   #exitBtn {
-    top: 9px;
     right: 10px;
+  }
+
+  #fullscreenBtn {
+    right: 44px;
   }
 
   .toolbar {

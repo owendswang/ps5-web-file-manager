@@ -13,7 +13,7 @@ ifeq ($(MAKECMDGOALS),)
   endif
 endif
 
-VERSION_TAG := v1.12RU6
+VERSION_TAG := v1.13RU1
 TITLE_ID    := FMGR88888
 PYTHON      ?= python3
 CMAKE       ?= cmake
@@ -29,8 +29,10 @@ PS5_DEBUG  := $(if $(filter debug,$(MAKECMDGOALS)),1,0)
 PS5_BUILD_DIR := .build-ps5/$(if $(filter debug,$(MAKECMDGOALS)),debug,release)
 PS5_BUILD_BIN := $(PS5_BUILD_DIR)/$(BIN)
 COMMON_SRCS := src/main.c src/websrv.c src/filemgr.c src/file_response.c src/task.c src/upload.c src/download.c src/text.c src/list.c src/space.c src/fs_util.c src/json_util.c src/path_util.c src/asset.c src/mime.c src/notify.c src/pkg_installer.c src/pkg_info.c src/archive_extract.c src/archive_helper.c src/smb.c src/vfs.c src/transfer.c
-PS5_SRCS    := $(COMMON_SRCS) src/app_installer.c
+PS5_SRCS    := $(COMMON_SRCS) src/app_installer.c src/browser_patch.c .build-fullscreen/hbc_patch.c
 HEADERS     := $(wildcard src/*.h)
+FULLSCREEN_HEAD := $(shell if test -f vendor/browser-fullscreen/.git; then git -C vendor/browser-fullscreen rev-parse --git-path HEAD; fi)
+FULLSCREEN_INPUTS := $(FULLSCREEN_HEAD) $(wildcard vendor/browser-fullscreen/src/*.[ch])
 SMB2_HEAD   := $(shell if test -f vendor/libsmb2/.git; then git -C vendor/libsmb2 rev-parse --git-path HEAD; fi)
 SMB2_INPUTS := $(SMB2_HEAD) $(wildcard vendor/libsmb2/CMakeLists.txt vendor/libsmb2/cmake/* vendor/libsmb2/lib/* vendor/libsmb2/include/*.h vendor/libsmb2/include/smb2/*)
 SMB2_CMAKE_FLAGS := -DBUILD_SHARED_LIBS=OFF -DENABLE_LIBKRB5=OFF -DENABLE_GSSAPI=OFF -DENABLE_EXAMPLES=OFF -DCMAKE_BUILD_TYPE=Release
@@ -48,10 +50,12 @@ GEN_SRCS    := $(patsubst assets/%,gen/%, $(ASSETS:=.c))
 CFLAGS := -Oz -flto=thin -fno-asynchronous-unwind-tables -fno-unwind-tables -Wall -Werror -ffunction-sections -fdata-sections -Isrc -DVERSION_TAG=\"$(VERSION_TAG)\" -DTITLE_ID=\"$(TITLE_ID)\"
 CFLAGS += `$(PKG_CONFIG) libmicrohttpd --cflags`
 CFLAGS += -DWFM_DEBUG=$(PS5_DEBUG)
+# The test-mode evidence API is shared by the fullscreen adapter and HBC parser.
+CFLAGS += -DTEST_HBC_LIVE_PLAN=1
 CFLAGS += -Ivendor/libsmb2/include
 LDFLAGS := -Wl,--gc-sections
 LDADD  := `$(PKG_CONFIG) libmicrohttpd --libs`
-LDADD  += -lSceIpmi -lSceAppInstUtil -lSceUserService
+LDADD  += -lSceIpmi -lSceAppInstUtil -lSceUserService -lSceSystemService
 LINUX_CFLAGS := -O2 -flto=auto -Wall -Werror -Isrc -DVERSION_TAG=\"$(VERSION_TAG)\" -DTITLE_ID=\"$(TITLE_ID)\"
 LINUX_CFLAGS += `$(HOST_PKG_CONFIG) libmicrohttpd --cflags`
 LINUX_CFLAGS += -DWFM_DEBUG=1
@@ -81,6 +85,7 @@ clean:
 	rm -rf $(BIN) $(LINUX_BIN) gen
 	rm -rf .build-ps5/release .build-ps5/debug
 	rm -rf .build-smb2
+	rm -rf .build-fullscreen
 
 gen/%.c: assets/% gen-asset-module.py | gen
 	$(PYTHON) gen-asset-module.py --path $* $< > $@
@@ -88,7 +93,7 @@ gen/%.c: assets/% gen-asset-module.py | gen
 $(BIN): $(PS5_BUILD_BIN) force-ps5-copy
 	cp $< $@
 
-$(PS5_BUILD_BIN): $(PS5_SRCS) $(HEADERS) $(GEN_SRCS) assets/icon0.png assets/param.json Makefile $(SMB2_PS5_LIB)
+$(PS5_BUILD_BIN): $(PS5_SRCS) $(HEADERS) $(GEN_SRCS) assets/icon0.png assets/param.json Makefile $(SMB2_PS5_LIB) .build-fullscreen/source.stamp
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c,$^) $(SMB2_PS5_LIB) $(LDADD)
 	$(STRIP) $@
@@ -96,6 +101,17 @@ $(PS5_BUILD_BIN): $(PS5_SRCS) $(HEADERS) $(GEN_SRCS) assets/icon0.png assets/par
 $(LINUX_BIN): $(LINUX_SRCS) $(HEADERS) $(GEN_SRCS) Makefile $(SMB2_LINUX_LIB)
 	$(HOST_CC) $(LINUX_CFLAGS) -o $@ $(filter %.c,$^) $(SMB2_LINUX_LIB) $(LINUX_LDADD)
 	$(HOST_STRIP) $@
+
+.build-fullscreen/source.stamp: Makefile patches/browser-fullscreen-embed.patch .gitmodules $(FULLSCREEN_INPUTS)
+	@test -f vendor/browser-fullscreen/src/main.c || \
+	  (echo "Initialize fullscreen with: git submodule update --init --recursive" >&2; exit 1)
+	mkdir -p .build-fullscreen
+	cp vendor/browser-fullscreen/src/*.[ch] .build-fullscreen/
+	git apply --directory=.build-fullscreen patches/browser-fullscreen-embed.patch
+	touch $@
+
+.build-fullscreen/hbc_patch.c: .build-fullscreen/source.stamp
+	@test -f $@
 
 .build-smb2/%/source.stamp: Makefile patches/libsmb2-rename-replace.patch .gitmodules $(SMB2_INPUTS)
 	@test -f vendor/libsmb2/include/smb2/libsmb2.h || \

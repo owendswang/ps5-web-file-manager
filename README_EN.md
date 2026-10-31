@@ -45,6 +45,7 @@ PS5 web file manager payload. It runs an HTTP UI starting at port `8888`, regist
 - Preview image files ending with `.png`, `.jpg`, `.jpeg`, `.gif`, `.bmp`, `.webp`.
 - Install/Preview PKG files ends with `.pkg`.
 - Launch payload files ending with `.elf` by sending them to the ELF loader at `localhost:9021` after confirmation.
+- Toggle the PS5 browser between fullscreen and its ordinary layout from the top-right button. The browser reopens the current folder.
 
 ## Build
 
@@ -53,6 +54,8 @@ It depends on PS5 payload SDK first: [ps5-payload-dev/sdk](https://github.com/ps
 ```sh
 export PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk
 ```
+
+Initialize the pinned dependencies with `git submodule update --init --recursive`.
 
 This project uses `libmicrohttpd` for HTTP and `libsmb2` for SMB. `make` checks for `libmicrohttpd` before building and runs the installer script automatically if it is missing:
 
@@ -119,6 +122,7 @@ On startup the payload registers a `PS5 Web File Manager` web shortcut in the Me
 - File names are transmitted as UTF-8 through the web API. The payload also attempts to preserve legacy byte-oriented names returned by mounted filesystems so mixed USB filename encodings can still be displayed and operated on.
 
 ## FAQ
+- The optional fullscreen button patches browser layout in RAM; it does not replace system files.
 - This is a homebrew app and should not intentionally modify system processes or kernel memory. If a kernel panic happens, make sure you are using a recent jailbreak method and ELF loader, or switch back to the stable method you normally use.
 - If you are using P2JB and this payload causes a kernel panic, avoid using it with that setup. Stability matters more than convenience when each retry takes a long time.
 - The preparing stage may calculate folder size and check available space. It can be slow when a folder contains many files, but it helps prevent starting a copy, move, upload, or download operation that cannot be completed safely.

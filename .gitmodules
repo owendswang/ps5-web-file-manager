@@ -1,3 +1,6 @@
 [submodule "vendor/libsmb2"]
 	path = vendor/libsmb2
 	url = https://github.com/sahlberg/libsmb2.git
+[submodule "vendor/browser-fullscreen"]
+	path = vendor/browser-fullscreen
+	url = https://github.com/owendswang/ps5-web-browser-fullscreen.git

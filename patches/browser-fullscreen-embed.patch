@@ -1,0 +1,129 @@
+diff --git a/browser_bootstrap.h b/browser_bootstrap.h
+--- a/browser_bootstrap.h
++++ b/browser_bootstrap.h
+@@ -10,6 +10,8 @@ int sceSystemServiceLaunchWebBrowser(const char *, void *);
+ int sceKernelLoadStartModule(const char *, size_t, const void *, uint32_t, void *, int *);
+ 
++#ifndef HYBRID_BROWSER_URL
+ #define HYBRID_BROWSER_URL "http://127.0.0.1:8888/"
++#endif
+ #ifndef HYBRID_OBSERVE_SHELLUI
+ #define HYBRID_OBSERVE_SHELLUI(phase,pid) ((void)0)
+ #endif
+diff --git a/fullscreen_fast_locator.h b/fullscreen_fast_locator.h
+--- a/fullscreen_fast_locator.h
++++ b/fullscreen_fast_locator.h
+@@ -33,3 +33,4 @@
+-static struct fp_native hybrid_discovered_native;
++static struct fp_native *hybrid_discovered_native_state;
++#define hybrid_discovered_native (*hybrid_discovered_native_state)
+ static int hybrid_discovered_valid;
+ #endif
+@@ -121,3 +122,4 @@
+     uint8_t headers[2][128];
+-} anchor_last_graph;
++} *anchor_last_graph_state;
++#define anchor_last_graph (*anchor_last_graph_state)
+ struct anchor_probe_budget { int pid; size_t calls,bytes; unsigned exhausted; };
+@@ -127,3 +129,4 @@
+     uintptr_t image,bases[2];
+-} anchor_open_graph;
++} *anchor_open_graph_state;
++#define anchor_open_graph (*anchor_open_graph_state)
+ static inline int anchor_probe_read(void *context,uintptr_t address,void *out,size_t length) {
+@@ -165,6 +168,8 @@ static inline void anchor_phase_snapshot(const char *phase,int pid,uintptr_t image)
+ #endif
++static uint8_t (*anchor_code_state)[HA_CODE_BYTES];
+ static void anchor_report_code(unsigned index,const char *label,const uint8_t *code) {
+-    static uint8_t previous[2][HA_CODE_BYTES]; static unsigned valid;
++    uint8_t (*previous)[HA_CODE_BYTES]=anchor_code_state; static unsigned valid;
++    if(!code) { valid=0; return; }
+     if((valid&(1U<<index)) && !memcmp(previous[index],code,HA_CODE_BYTES)) {
+         DIAG_EVENT("%s unchanged from previous attempt; complete first window retained",label);
+         (void)label; return;
+diff --git a/diagnostics.h b/diagnostics.h
+--- a/diagnostics.h
++++ b/diagnostics.h
+@@ -27,2 +27,3 @@
+-static struct diagnostic_report diagnostic;
++static struct diagnostic_report *diagnostic_state;
++#define diagnostic (*diagnostic_state)
+ static inline void diag_ascii(char *text) {
+diff --git a/fullscreen_hybrid.h b/fullscreen_hybrid.h
+--- a/fullscreen_hybrid.h
++++ b/fullscreen_hybrid.h
+@@ -22,3 +22,5 @@
+-static struct hybrid_cache hybrid_record;
+-static struct hybrid_cache hybrid_disk_record;
++static struct hybrid_cache *hybrid_record_state;
++#define hybrid_record (*hybrid_record_state)
++static struct hybrid_cache *hybrid_disk_record_state;
++#define hybrid_disk_record (*hybrid_disk_record_state)
+ static int hybrid_pending;
+diff --git a/jsc_fullscreen.h b/jsc_fullscreen.h
+--- a/jsc_fullscreen.h
++++ b/jsc_fullscreen.h
+@@ -13,2 +13,3 @@
+-static struct jsc_reference_profile jsc_record;
++static struct jsc_reference_profile *jsc_record_state;
++#define jsc_record (*jsc_record_state)
+ static int jsc_pending;
+diff --git a/hbc_candidate_export.h b/hbc_candidate_export.h
+--- a/hbc_candidate_export.h
++++ b/hbc_candidate_export.h
+@@ -32,5 +32,6 @@
+     int pid;
+     unsigned count,overflow,changed,unsupported;
+     struct { uintptr_t base; uint8_t header[128]; } items[HBC_CANDIDATES_MAX];
+-} hbc_candidate_inventory;
++} *hbc_candidate_inventory_state;
++#define hbc_candidate_inventory (*hbc_candidate_inventory_state)
+ static inline int hbc_inventory_equal(const struct hbc_inventory *a,const struct hbc_inventory *b) {
+diff --git a/hbc_module_identity.h b/hbc_module_identity.h
+--- a/hbc_module_identity.h
++++ b/hbc_module_identity.h
+@@ -10,3 +10,4 @@
+     struct { int pid; uintptr_t module,buffer; } seen[4];
+-} hmi_budget;
++} *hmi_budget_state;
++#define hmi_budget (*hmi_budget_state)
+ static inline int hmi_read(struct hmi_context *c,uintptr_t address,void *out,size_t size) {
+diff --git a/scan_observations.h b/scan_observations.h
+--- a/scan_observations.h
++++ b/scan_observations.h
+@@ -10,3 +10,4 @@
+     struct { uintptr_t base; uint32_t length; uint8_t header[128]; } items[8];
+-} scan_native_probes;
++} *scan_native_probes_state;
++#define scan_native_probes (*scan_native_probes_state)
+ static inline void scan_native_reset(int pid) {
+diff --git a/notification.h b/notification.h
+--- a/notification.h
++++ b/notification.h
+@@ -15,8 +15,9 @@
+ static void notify_result(int result, int restore, int inspect, const char *failure) {
++    if(!result)return;
+     struct fullscreen_notification request={0};
+-    const char *operation=inspect?"Browser inspection":restore?"Browser layout restore":"Browser fullscreen";
++    const char *operation=patch_zh?(restore?"还原窗口":"全屏"):inspect?"Browser inspection":restore?"Browser layout restore":"Browser fullscreen";
+     if(result==1)
+-        snprintf(request.message,sizeof(request.message),"%s failed: %s. Check payload output.",operation,failure);
++        snprintf(request.message,sizeof(request.message),patch_zh?"%s失败：%s。诊断文件：/data/web-browser-fullscreen.ini":"%s failed: %s. Diagnostics: /data/web-browser-fullscreen.ini",operation,patch_failure_text(failure));
+     else if(result==2)
+-        snprintf(request.message,sizeof(request.message),"%s succeeded; INI save failed.",operation);
++        snprintf(request.message,sizeof(request.message),patch_zh?"%s已完成，但诊断文件保存失败：/data/web-browser-fullscreen.ini":"%s succeeded; INI save failed: /data/web-browser-fullscreen.ini",operation);
+     else
+diff --git a/main.c b/main.c
+--- a/main.c
++++ b/main.c
+@@ -285,7 +285,8 @@
+ finish:
+     if(attached) {
+-        if(trace(PT_DETACH,pid)) { DIAG_ERROR("transaction.detach",errno,"Cannot detach from ShellUI"); perror("PT_DETACH"); failure="cannot detach from ShellUI"; result=1; }
+-        else attached=0;
++        int cleanup=browser_patch_detach(pid);
++        attached=0;
++        if(cleanup) { DIAG_ERROR("transaction.detach",errno,"ShellUI exited or tracing ended unexpectedly"); failure="ShellUI exited or tracing ended unexpectedly"; result=1; }
+     }
+     if(!result && !attached && (engine==BROWSER_JSC?jsc_commit():hybrid_commit())) {
+         result=2; DIAG_ERROR("cache.save",errno,"RAM operation succeeded but INI save failed");

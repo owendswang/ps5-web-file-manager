@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -31,6 +32,8 @@
 #include "smb.h"
 #include "vfs.h"
 #include "transfer.h"
+#include "notify.h"
+#include "browser_patch.h"
 
 #define TRANSFER_ALERT_THRESHOLD (10 * 60)
 
@@ -44,6 +47,10 @@ int sceKernelLoadStartModule(const char *, size_t, const void *, uint32_t,
                              void *, int *);
 int sceUserServiceInitialize(const int *);
 int sceUserServiceGetForegroundUser(int *);
+int sceSystemServiceLaunchWebBrowser(const char *, void *);
+
+static pthread_mutex_t g_browser_layout_lock = PTHREAD_MUTEX_INITIALIZER;
+static int g_browser_layout_busy;
 
 static int
 navigate_to_home(void) {
@@ -641,6 +648,16 @@ move_path(file_task_t *task, const char *src, const char *dst) {
   }
 
   ret = rename(src, dst);
+  if(ret && errno == ENOENT && !smb_path(src) && !smb_path(dst)) {
+    /* PS5 USB lookup can briefly fail for an existing Unicode directory.
+       Refresh the lookups and retry once only if no target would be replaced. */
+    char parent[PATH_MAX];
+    if(!lstat(src, &src_st) && !path_dirname(dst, parent, sizeof(parent)) &&
+       !stat(parent, &dst_st) && S_ISDIR(dst_st.st_mode) &&
+       lstat(dst, &dst_st) && errno == ENOENT) {
+      ret = rename(src, dst);
+    } else errno = ENOENT;
+  }
   if(ret && errno == EXDEV) {
     ret = copy_path(task, src, dst);
     if(!ret) {
@@ -1340,11 +1357,157 @@ stop_websrv_later(void *arg) {
 static enum MHD_Result
 api_exit(struct MHD_Connection *conn) {
   pthread_t thread;
+  int error;
 
-  if(!pthread_create(&thread, NULL, stop_websrv_later, NULL)) {
-    pthread_detach(thread);
+#ifndef __linux__
+  pthread_mutex_lock(&g_browser_layout_lock);
+  if(g_browser_layout_busy) {
+    pthread_mutex_unlock(&g_browser_layout_lock);
+    return send_json_error_detail(conn, MHD_HTTP_CONFLICT,
+      "a browser operation is already in progress", "browser_layout_busy", NULL);
   }
+#endif
+  error = pthread_create(&thread, NULL, stop_websrv_later, NULL);
+#ifndef __linux__
+  if(!error) g_browser_layout_busy = 1;
+  pthread_mutex_unlock(&g_browser_layout_lock);
+#endif
+  if(error) {
+    errno = error;
+    return send_json_error(conn, MHD_HTTP_INTERNAL_SERVER_ERROR, NULL);
+  }
+  pthread_detach(thread);
   return send_json_ok(conn);
+}
+
+#ifndef __linux__
+typedef struct browser_layout_request {
+  int restore;
+  int zh;
+  char url[PATH_MAX * 6 + 320];
+} browser_layout_request_t;
+
+static int
+browser_hash_valid(const char *hash) {
+  if(!hash || hash[0] != '#') return 0;
+  for(const unsigned char *p = (const unsigned char *)hash; *p; p++) {
+    if(*p < 33 || *p > 126) return 0;
+  }
+  return 1;
+}
+
+static void *
+change_browser_layout(void *arg) {
+  browser_layout_request_t *request = arg;
+  struct sigaction saved, action = {.sa_handler = SIG_DFL};
+  int result;
+
+  /* Let the HTTP response arrive before leaving the browser. */
+  usleep(250000);
+  if(navigate_to_home()) {
+    notify_user(request->zh ? "浏览器布局切换失败：无法返回主界面。" :
+                             "Browser layout change failed: cannot return to home.");
+  } else {
+    usleep(1000000);
+    /* The standalone patch expects waitpid/ptrace, rather than SIGCHLD ignore. */
+    sigemptyset(&action.sa_mask);
+    if(sigaction(SIGCHLD, &action, &saved)) {
+      notify_user(request->zh ? "浏览器布局切换失败：无法准备进程跟踪。" :
+                               "Browser layout change failed: cannot prepare process tracing.");
+    } else {
+      (void)browser_patch(request->restore, request->url, request->zh);
+      (void)sigaction(SIGCHLD, &saved, NULL);
+    }
+  }
+  /* Reopen even if navigation, discovery, verification or INI writing failed. */
+  result = sceSystemServiceLaunchWebBrowser(request->url, NULL);
+#if WFM_DEBUG
+  printf("Browser layout reopen %s: 0x%08X\n", request->url, (unsigned int)result);
+#endif
+  if(result) {
+    notify_user(request->zh ? "无法重新打开浏览器，请从主界面打开文件管理器。" :
+                             "Cannot reopen the browser. Open Web File Manager from home.");
+  }
+  free(request);
+  pthread_mutex_lock(&g_browser_layout_lock);
+  g_browser_layout_busy = 0;
+  pthread_mutex_unlock(&g_browser_layout_lock);
+  return NULL;
+}
+#endif
+
+static enum MHD_Result
+api_browser_layout(struct MHD_Connection *conn, const char *method,
+                    const char *body, size_t body_size) {
+  if(strcmp(method, MHD_HTTP_METHOD_POST)) {
+    return send_json_error(conn, MHD_HTTP_METHOD_NOT_ALLOWED, "invalid method");
+  }
+#ifdef __linux__
+  (void)body;
+  (void)body_size;
+  return send_json_error_detail(conn, MHD_HTTP_NOT_IMPLEMENTED,
+    "browser layout changes are only available on PS5",
+    "browser_layout_unsupported", NULL);
+#else
+  char *restore = body_form_value(body, body_size, "restore");
+  char *hash = body_form_value(body, body_size, "hash");
+  browser_layout_request_t *request = NULL;
+  pthread_attr_t attr;
+  pthread_t thread;
+  int error, length;
+
+  if(!restore || (strcmp(restore, "0") && strcmp(restore, "1")) ||
+     !browser_hash_valid(hash)) {
+    free(restore);
+    free(hash);
+    return send_json_error(conn, MHD_HTTP_BAD_REQUEST, "invalid path");
+  }
+  request = malloc(sizeof(*request));
+  if(!request) {
+    free(restore);
+    free(hash);
+    return send_json_error(conn, MHD_HTTP_INTERNAL_SERVER_ERROR, "out of memory");
+  }
+  request->restore = !strcmp(restore, "1");
+  char *lang = body_form_value(body, body_size, "lang");
+  request->zh = lang && (!strcmp(lang, "zh") || !strcmp(lang, "zh-CN"));
+  free(lang);
+  length = snprintf(request->url, sizeof(request->url),
+                    "http://127.0.0.1:%u/%s", websrv_port(), hash);
+  free(restore);
+  free(hash);
+  if(length < 0 || (size_t)length >= sizeof(request->url)) {
+    free(request);
+    return send_json_error(conn, MHD_HTTP_BAD_REQUEST, "invalid path");
+  }
+  if(has_active_task()) {
+    free(request);
+    return send_json_error(conn, MHD_HTTP_CONFLICT, "another task is running");
+  }
+  pthread_mutex_lock(&g_browser_layout_lock);
+  if(g_browser_layout_busy) {
+    pthread_mutex_unlock(&g_browser_layout_lock);
+    free(request);
+    return send_json_error_detail(conn, MHD_HTTP_CONFLICT,
+      "a browser operation is already in progress", "browser_layout_busy", NULL);
+  }
+  g_browser_layout_busy = 1;
+  error = pthread_attr_init(&attr);
+  if(!error) {
+    error = pthread_attr_setstacksize(&attr, 2 * 1024 * 1024);
+    if(!error) error = pthread_create(&thread, &attr, change_browser_layout, request);
+    pthread_attr_destroy(&attr);
+  }
+  if(error) g_browser_layout_busy = 0;
+  pthread_mutex_unlock(&g_browser_layout_lock);
+  if(error) {
+    free(request);
+    errno = error;
+    return send_json_error(conn, MHD_HTTP_INTERNAL_SERVER_ERROR, NULL);
+  }
+  pthread_detach(thread);
+  return send_json_ok(conn);
+#endif
 }
 
 static enum MHD_Result
@@ -1969,6 +2132,7 @@ filemgr_api_request(struct MHD_Connection *conn, const char *url,
   }
   if(!strcmp(url, "/api/cancel")) return api_cancel(conn);
   if(!strcmp(url, "/api/exit")) return api_exit(conn);
+  if(!strcmp(url, "/api/browser/layout")) return api_browser_layout(conn, method, body, body_size);
   if(!strcmp(url, "/api/copy")) return api_copy(conn, body, body_size);
   if(!strcmp(url, "/api/move")) return api_move(conn, body, body_size);
   if(!strcmp(url, "/api/delete")) return api_delete(conn, body, body_size);
