@@ -132,6 +132,20 @@ On startup the payload registers a `PS5 Web File Manager` web shortcut in the Me
 This is a fork of the following project, featuring Russian localization and minor enhancements:
 https://github.com/owendswang/ps5-web-file-manager
 
+This project was built with reference to these projects:
+
+- **[ps5-payload-dev/websrv](https://github.com/ps5-payload-dev/websrv):** HTTP server structure, static asset embedding ideas, PS5 browser/websrv behavior and PKG install function. SMB connection/authentication and SMB PKG installation reference. License: GPLv3+.
+- **[itsPLK/ps5-pkg-manager](https://github.com/itsPLK/ps5-pkg-manager):** HTTP PKG streaming, byte-range handling and installation metadata/icon URL reference. License: GPLv3.
+- **[ps5-payload-dev/ftpsrv](https://github.com/ps5-payload-dev/ftpsrv):** PS5 payload conventions, home screen launcher/install flow reference, process handling style and startup installation reference. License: GPLv3+.
+- **[seregonwar/zftpd](https://github.com/seregonwar/zftpd):** PS5 TCP socket buffer tuning and high-throughput transfer behavior reference. License: MIT.
+- **[itsPLK/ps5-payload-manager](https://github.com/itsPLK/ps5-payload-manager):** Payload building behavior and native browser launch reference. License: GPLv3.
+- **[owendswang/ps5-web-browser-fullscreen](https://github.com/owendswang/ps5-web-browser-fullscreen):** Browser fullscreen/restore implementation, including test-mode discovery and INI diagnostics. License: GPLv3+.
+- **[libmicrohttpd](https://ftp.gnu.org/gnu/libmicrohttpd/):** Used as the embedded HTTP server library. It is licensed by GNU under the LGPL; this payload links it as the SDK-provided static library.
+- **[libsmb2](https://github.com/sahlberg/libsmb2):** SMB2/3 client library. License: LGPLv2.1.
+- **[ps5-payload-dev/sdk](https://github.com/ps5-payload-dev/sdk):** Payload building foundation. License: GPLv3+.
+- **[etaHEN](https://github.com/etaHEN/etaHEN):** ShellUI URI navigation used to return to the PS5 home screen before exit. License: GPLv3.
+- **[ezremote](https://github.com/cy33hc/ps5-ezremote-client):** Preview PKG info. License: GPLv2.
+
 ## License
 
 The project is distributed under GPLv3 or later, matching the GPLv3+ projects used as implementation references. See `LICENSE`.
