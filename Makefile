@@ -50,8 +50,8 @@ GEN_SRCS    := $(patsubst assets/%,gen/%, $(ASSETS:=.c))
 CFLAGS := -Oz -flto=thin -fno-asynchronous-unwind-tables -fno-unwind-tables -Wall -Werror -ffunction-sections -fdata-sections -Isrc -DVERSION_TAG=\"$(VERSION_TAG)\" -DTITLE_ID=\"$(TITLE_ID)\"
 CFLAGS += `$(PKG_CONFIG) libmicrohttpd --cflags`
 CFLAGS += -DWFM_DEBUG=$(PS5_DEBUG)
-# The test-mode evidence API is shared by the fullscreen adapter and HBC parser.
-CFLAGS += -DTEST_HBC_LIVE_PLAN=1
+# The live-discovery evidence API is shared by the fullscreen adapter and HBC parser.
+CFLAGS += -DFULLSCREEN_LIVE_PLAN=1
 CFLAGS += -Ivendor/libsmb2/include
 LDFLAGS := -Wl,--gc-sections
 LDADD  := `$(PKG_CONFIG) libmicrohttpd --libs`

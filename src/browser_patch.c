@@ -8,7 +8,6 @@ static int patch_restore;
 static int patch_zh;
 static const char *patch_url;
 static int browser_patch_main(void);
-static int browser_patch_detach(int pid);
 static const char *patch_failure_text(const char *failure);
 
 #if !WFM_DEBUG
@@ -23,7 +22,7 @@ static int patch_quiet_log(const char *text, ...) { (void)text; return 0; }
 #define FULLSCREEN_SAFE_SCAN 1
 #define TEST_HERMES_EXPORT 0
 #define TEST_HBC_EXPORT 0
-#define TEST_HBC_LIVE_PLAN 1
+#define FULLSCREEN_LIVE_PLAN 1
 #define EXPORT_FIXED_PROFILE 0
 #define DIAG_DEEP 1
 #define HYBRID_BROWSER_URL patch_url
@@ -49,7 +48,7 @@ patch_failure_text(const char *failure) {
     {"unexpected browser patch bytes", "浏览器补丁位置的内容不符合预期"},
     {"patch write or verification error", "补丁写入或校验失败"},
     {"rollback verification error", "回滚校验失败"},
-    {"ShellUI exited or tracing ended unexpectedly", "ShellUI 已退出或跟踪意外结束"},
+    {"ShellUI exited during cleanup", "ShellUI 在收尾时退出"},
     {"JSC native image or exports unavailable", "无法读取 JSC 模块或导出符号"},
     {"cannot stop ShellUI for JSC validation", "无法暂停 ShellUI 以校验 JSC"},
     {"JSC reference, INI and discovery rejected", "JSC 预设、INI 和自动定位均未通过校验"},
@@ -65,28 +64,6 @@ patch_failure_text(const char *failure) {
     }
   }
   return failure;
-}
-
-static int
-browser_patch_detach(int pid) {
-  unsigned int attempts = 0;
-
-  for(;;) {
-    if(!trace(PT_DETACH, pid)) return 0;
-    int error = errno, status = 0;
-    pid_t child = waitpid(pid, &status, WNOHANG);
-    if((child == pid && (WIFEXITED(status) || WIFSIGNALED(status))) ||
-       (child < 0 && errno == ECHILD)) {
-      errno = error;
-      return 1;
-    }
-    if(++attempts <= 3 || attempts % 10 == 0) {
-      DIAG_EVENT("Final detach retry=%u errno=%d child=%d status=%#x",
-                 attempts, error, (int)child, status);
-    }
-    /* Retain the recovery worker while this process still owns the tracee. */
-    usleep(attempts < 3 ? 10000 : 100000);
-  }
 }
 
 /* Keep logs and discovery snapshots outside the resident ELF's BSS. */
