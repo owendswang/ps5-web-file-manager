@@ -74,7 +74,7 @@ install_app(const char *title_id, const char *dir) {
   return sceAppInstUtilAppInstallAll(0);
 }
 
-/* Preserve existing names/settings; only change our loopback launcher URL. */
+/* Preserve settings. Return 1 when the URL changes, 0 if unchanged, -1 on error. */
 static int
 update_launcher_port(const char *path, unsigned short port) {
   struct stat st;
@@ -127,6 +127,7 @@ update_launcher_port(const char *path, unsigned short port) {
   file = NULL;
   if(!result) result = rename(temp, path);
   if(result) remove(temp);
+  else result = 1;
 done:
   if(file) fclose(file);
   free(data);
@@ -140,6 +141,7 @@ app_install_if_needed(unsigned short port) {
   char sce_sys_dir[256];
   char param_path[256];
   char icon_path[256];
+  struct stat st;
   int err;
   static int icon_registered;
 
@@ -152,6 +154,14 @@ app_install_if_needed(unsigned short port) {
   snprintf(sce_sys_dir, sizeof(sce_sys_dir), "/user/app/%s/sce_sys", title_id);
   snprintf(param_path, sizeof(param_path), "%s/param.json", sce_sys_dir);
   snprintf(icon_path, sizeof(icon_path), "%s/icon0.png", sce_sys_dir);
+
+  if(!stat(param_path, &st) && !stat(icon_path, &st)) {
+    err = update_launcher_port(param_path, port);
+    if(err <= 0) {
+      if(err) perror("update launcher port");
+      return err;
+    }
+  }
 
   printf("Installing launcher app %s\n", title_id);
 
@@ -173,7 +183,7 @@ app_install_if_needed(unsigned short port) {
   }
   if(install_file(param_path, param_json, param_json_size) ||
      install_file(icon_path, icon0_png, icon0_png_size) ||
-     update_launcher_port(param_path, port)) {
+     update_launcher_port(param_path, port) < 0) {
     perror("install launcher assets");
     return -1;
   }
