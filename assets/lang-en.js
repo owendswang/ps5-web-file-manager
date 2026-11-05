@@ -84,6 +84,7 @@ window.WFM_LANG = {
   diskUnavailable: "{name} (Unavailable)",
   diskSpaceUnknown: "{name} (Capacity unavailable)",
   addSmb: "Add Path",
+  addCurrentSmb: "Add Current Path",
   manageSmb: "Manage Paths",
   removeSmb: "Remove",
   smbConnectionsEmpty: "No custom paths yet. Add one below.",

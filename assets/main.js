@@ -71,6 +71,7 @@ const manageSmbBtn = document.getElementById("manageSmbBtn");
 const smbManagerOverlayEl = document.getElementById("smbManagerOverlay");
 const smbConnectionListEl = document.getElementById("smbConnectionList");
 const smbManagerAddBtn = document.getElementById("smbManagerAddBtn");
+const smbManagerAddCurrentBtn = document.getElementById("smbManagerAddCurrentBtn");
 const smbManagerCloseBtn = document.getElementById("smbManagerCloseBtn");
 const smbSharePickerEl = document.getElementById("smbSharePicker");
 const smbShareSelectEl = document.getElementById("smbShareSelect");
@@ -1093,9 +1094,9 @@ function chooseSmbShare(shares) {
   });
 }
 
-async function addSmbConnection() {
+async function addSmbConnection(event,customPath=false) {
   if (smbManagerBusy()) return;
-  let previousInput = "smb://";
+  let previousInput = customPath === false ? "smb://" : customPath;
   localActionBusy = true;
   setBusy(true);
   try {
@@ -1923,6 +1924,7 @@ function updateButtons() {
   versionEl.disabled = locked;
   manageSmbBtn.disabled = spaceNavigationLocked();
   smbManagerAddBtn.disabled = smbManagerBusy();
+  smbManagerAddCurrentBtn.disabled = smbManagerBusy();
   smbManagerCloseBtn.disabled = localActionBusy;
   for (const button of smbConnectionListEl.querySelectorAll("button")) {
     button.disabled = smbManagerBusy();
@@ -3155,6 +3157,9 @@ pkgInfoImageEl.addEventListener("error", () => {
 });
 manageSmbBtn.addEventListener("click", openSmbManager);
 smbManagerAddBtn.addEventListener("click", addSmbConnection);
+smbManagerAddCurrentBtn.addEventListener("click", (event) => {
+  addSmbConnection(event,cwd);
+});
 smbManagerCloseBtn.addEventListener("click", closeSmbManager);
 document.getElementById("smbShareConnectBtn").addEventListener("click", () => {
   if (smbShareChoice) smbShareChoice(smbShareSelectEl.value);

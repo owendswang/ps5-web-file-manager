@@ -1169,6 +1169,10 @@ input[type="checkbox"] {
   flex: 0 0 auto;
 }
 
+#smbManagerActions.permission-actions {
+  flex-wrap: wrap;
+}
+
 #smbSharePicker {
   margin-top: 20px;
 }
@@ -1308,6 +1312,12 @@ input[type="checkbox"] {
 
 .permission-actions button + button {
   margin-left: 14px;
+}
+
+.permission-actions #smbManagerCloseBtn {
+  margin-left: 0px;
+  margin-top: 14px;
+  flex-basis: 100%;
 }
 
 .extract-options {
