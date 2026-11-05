@@ -84,6 +84,7 @@ window.WFM_LANG = {
   diskUnavailable: "{name}（不可用）",
   diskSpaceUnknown: "{name}（容量待更新）",
   addSmb: "添加路径",
+  addCurrentSmb: "添加当前路径",
   manageSmb: "管理路径",
   removeSmb: "移除",
   smbConnectionsEmpty: "还没有自定义路径，可点击下方添加。",
