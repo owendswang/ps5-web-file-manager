@@ -85,6 +85,8 @@ window.WFM_LANG = {
   diskSpaceUnknown: "{name}（容量待更新）",
   addSmb: "添加路径",
   manageSmb: "管理路径",
+  favorite: "添加到管理路径",
+  favoriteConfirm: "将此目录添加到「管理路径」？\n{path}",
   removeSmb: "移除",
   smbConnectionsEmpty: "还没有自定义路径，可点击下方添加。",
   smbRemoveConfirm: "移除存储入口「{path}」？\n\n目录和文件不会被删除。",

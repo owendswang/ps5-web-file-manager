@@ -130,6 +130,15 @@ body {
   font-size: 18px;
 }
 
+.top-right .space-add::before {
+  content: "";
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  margin-right: 6px;
+  background: url("/icon-favorite.png") center / contain no-repeat;
+}
+
 .space-info .space-select {
   -webkit-appearance: menulist-button;
   color-scheme: dark;

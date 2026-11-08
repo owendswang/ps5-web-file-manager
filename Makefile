@@ -13,7 +13,7 @@ ifeq ($(MAKECMDGOALS),)
   endif
 endif
 
-VERSION_TAG := v1.13
+VERSION_TAG := v1.14
 TITLE_ID    := FMGR88888
 PYTHON      ?= python3
 CMAKE       ?= cmake

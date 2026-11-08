@@ -38,7 +38,7 @@ let uploadXhr = null;
 let uploadTerminalAbort = false;
 let L = {};
 
-const APP_VERSION = "v1.13";
+const APP_VERSION = "v1.14";
 const SMB_PASSWORD_KEY = "ps5-web-file-mgr:smb-password:";
 const smbPasswords = {};
 const smbReady = {};
@@ -975,13 +975,17 @@ async function ensureSmbPaths(values) {
     smbConnections = (data.spaces || []).filter(item => isSmbPath(item.path));
   }
   for (const path of paths) {
-    const item = smbConnections.filter(item => smbContainsPath(item.path, path))
-      .sort((a, b) => b.path.length - a.path.length)[0];
+    const item = smbConnectionForPath(path);
     if (!item) continue;
     if (!smbReady[item.path]) smbReady[item.path] = unlockSmb(item);
     try { await smbReady[item.path]; }
     catch (err) { delete smbReady[item.path]; throw err; }
   }
+}
+
+function smbConnectionForPath(path) {
+  return smbConnections.filter(item => smbContainsPath(item.path, path))
+    .sort((a, b) => b.path.length - a.path.length)[0];
 }
 
 function isSmbPath(path) {
@@ -1025,13 +1029,19 @@ function showStorageError(key, error) {
   alert(t(key, { error: reason }));
 }
 
-function openSmbManager() {
+async function openSmbManager(addedPath) {
   if (spaceNavigationLocked()) return;
   setModalBackgroundLocked(true);
   smbManagerOverlayEl.hidden = false;
   renderSmbConnections();
   smbManagerAddBtn.focus();
-  refreshSpaces();
+  await refreshSpaces();
+  if (typeof addedPath === "string" && !smbManagerOverlayEl.hidden) {
+    const row = Array.from(smbConnectionListEl.children)
+      .find(row => row.firstChild.textContent === displayPath(addedPath));
+    if (row) smbConnectionListEl.scrollTop += row.getBoundingClientRect().top -
+      smbConnectionListEl.getBoundingClientRect().top;
+  }
 }
 
 function closeSmbManager() {
@@ -1093,6 +1103,47 @@ function chooseSmbShare(shares) {
   });
 }
 
+async function saveStoragePath(address, password) {
+  const data = await apiForm("/api/storage/add", { address: address, password: password });
+  if (isSmbPath(data.path)) {
+    saveSmbPassword(data, password);
+    smbReady[data.path] = Promise.resolve();
+  }
+  await refreshSpaces();
+  return data;
+}
+
+async function actionFavorite(item) {
+  if (item.type !== "d" || spaceNavigationLocked() ||
+      confirm(t("favoriteConfirm", { path: displayPath(item.path) })) !== true) return;
+  localActionBusy = true;
+  setBusy(true);
+  let savedPath;
+  try {
+    let address = displayPath(item.path);
+    let password = "";
+    if (isSmbPath(item.path)) {
+      await ensureSmbPaths({ path: item.path });
+      const connection = smbConnectionForPath(item.path);
+      if (connection) {
+        const user = (connection.domain ? encodeURIComponent(decodeFsText(connection.domain)) + ";" : "") +
+          encodeURIComponent(decodeFsText(connection.user || "Guest"));
+        address = address.replace("smb://", "smb://" + user + "@");
+        password = readSmbPassword(connection) || "";
+      }
+    }
+    const data = await saveStoragePath(address, password);
+    savedPath = data.path;
+  } catch (err) {
+    if (err.code !== "smb_password_canceled") showStorageError("storageAddFailed", err);
+    return;
+  } finally {
+    localActionBusy = false;
+    setBusy(false);
+  }
+  await openSmbManager(savedPath);
+}
+
 async function addSmbConnection() {
   if (smbManagerBusy()) return;
   let previousInput = "smb://";
@@ -1131,12 +1182,7 @@ async function addSmbConnection() {
           if (share === null) return;
           clean = clean.replace(/\/$/, "") + "/" + share;
         }
-        const data = await apiForm("/api/storage/add", { address: clean, password: password });
-        if (isSmbPath(data.path)) {
-          saveSmbPassword(data, password);
-          smbReady[data.path] = Promise.resolve();
-        }
-        await refreshSpaces();
+        const data = await saveStoragePath(clean, password);
         if (!await load(data.path, undefined, true, true, "seed")) continue;
         smbManagerOverlayEl.hidden = true;
         return;
@@ -2089,10 +2135,14 @@ function clearSelection(updateVisibleRows) {
   updateButtons();
 }
 
-const FILE_ACTIONS = { download: actionDownload, copy: actionCopy, move: actionMove, rename: actionRename, delete: actionDelete };
+const FILE_ACTIONS = { download: actionDownload, copy: actionCopy, move: actionMove, rename: actionRename, delete: actionDelete, favorite: actionFavorite };
 
 function runRowAction(item, action) {
   if (backgroundInteractionLocked()) return;
+  if (action === actionFavorite) {
+    action(item);
+    return;
+  }
   clearSelection();
   togglePath(item.path, true);
   focusPath(item.path);
@@ -2149,6 +2199,7 @@ function render() {
     const tools = document.createElement("span");
     tools.className = "row-tools";
     for (const op of actions) {
+      if (op === "favorite" && item.type !== "d") continue;
       const button = document.createElement("button");
       button.type = "button";
       button.className = "row-tool";

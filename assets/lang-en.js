@@ -85,6 +85,8 @@ window.WFM_LANG = {
   diskSpaceUnknown: "{name} (Capacity unavailable)",
   addSmb: "Add Path",
   manageSmb: "Manage Paths",
+  favorite: "Add to Manage Paths",
+  favoriteConfirm: "Add this folder to Manage Paths?\n{path}",
   removeSmb: "Remove",
   smbConnectionsEmpty: "No custom paths yet. Add one below.",
   smbRemoveConfirm: "Remove storage shortcut \"{path}\"?\n\nFolders and files will not be deleted.",
