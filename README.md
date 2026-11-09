@@ -26,7 +26,7 @@ PS5 web file manager payload. It runs an HTTP UI starting at port `8888`, regist
 - Copy, move, delete, rename, create files, and create folders.
 - Edit UTF-8 text files up to 1 MiB using the built-in plain text editor.
 - Multi-select operations.
-- Browse SMB, FTP/FTPS and WebDAV servers through **Manage Paths**, alongside local folder shortcuts. For example: `ftp://user@server:21/folder`, `webdav://server:8080/folder` or `webdavs://server/folder`. HTTP(S) URLs are also accepted for WebDAV.
+- Browse SMB, FTP and WebDAV servers through **Manage Paths**, alongside local folder shortcuts. For example: `ftp://user@server:21/folder` or `webdav://server:8080/folder`. `dav://` and `http://` URLs are also accepted for WebDAV.
 - Copy/move by choosing sources first, then pasting or moving them into the current folder.
 - Conflict prompts for overwriting files and merging folders.
 - Extract archive files ending with `.7z`, `.001`, `.zip`, `.zipx`, `.rar`, `.part01.rar`, `.arj`, `.bz2`, `.bzip2`, `.tbz`, `.tbz2`, `.cab`, `.gz`, `.gzip`, `.tgz`, `.tpz`, `.lzh`, `.lha`, `.tar`, `.xz`, `.txz`, `.z`, `.taz`, `.zst`, `.tzst`, `.xar`, `.xip`, `.cpio`, `.lzma`, `.pmd`. Extraction requires the separately distributed [`wfm-7zip-helper.elf` helper](https://github.com/owendswang/wfm-7zip-helper) at `/data/wfm/wfm-7zip-helper.elf`.
@@ -55,7 +55,7 @@ export PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk
 
 Initialize the pinned dependencies with `git submodule update --init --recursive`.
 
-This project uses `libmicrohttpd` for HTTP, `libsmb2` for SMB, `libcurl` for FTP/WebDAV, and `yxml` for WebDAV XML. CMake builds the pinned client libraries automatically; the PS5 build uses the SDK's Mbed TLS, and the Linux build requires OpenSSL development headers. `make` checks for `libmicrohttpd` before building and runs the installer script automatically if it is missing:
+This project uses `libmicrohttpd` for HTTP, `libsmb2` for SMB, `libcurl` for FTP/WebDAV, and `yxml` for WebDAV XML. CMake builds the pinned client libraries automatically, without TLS. `make` checks for `libmicrohttpd` before building and runs the installer script automatically if it is missing:
 
 ```sh
 make
@@ -121,7 +121,7 @@ On startup the payload registers a `PS5 Web File Manager` web shortcut in the Me
 - Remote paths and usernames are shared through `/data/wfm/config/smb.conf`, `ftp.conf` and `webdav.conf`; local shortcuts remain in `custom.conf`. Passwords are saved only in the current browser and requested when needed.
 - FTP paths start at the account's login folder; use `ftp://server//absolute/path` to start at the server's filesystem root instead.
 - FTP/WebDAV servers must allow directory listing; remote reads, including PKG streaming, require FTP restart or HTTP byte-range support. Capacity is shown only when the server provides it. Archive extraction and Unix permission changes require local storage.
-- `ftps://` uses implicit TLS (port 990 by default); `webdavs://` uses HTTPS. Certificate verification stays enabled. On PS5, supply a PEM CA bundle at `/data/wfm/config/ca-bundle.crt`; include your own CA for private certificates. Linux uses its system trust store unless this file is provided.
+- WebDAV supports Basic and Digest authentication. FTPS, HTTPS and HTTP NTLM authentication are not included in this compact build.
 
 ## FAQ
 - The optional fullscreen button patches browser layout in RAM; it does not replace system files.
@@ -140,10 +140,8 @@ This project was built with reference to these projects:
 - **[owendswang/ps5-web-browser-fullscreen](https://github.com/owendswang/ps5-web-browser-fullscreen):** Browser fullscreen/restore implementation, including test-mode discovery and INI diagnostics. License: GPLv3+.
 - **[libmicrohttpd](https://ftp.gnu.org/gnu/libmicrohttpd/):** Used as the embedded HTTP server library. It is licensed by GNU under the LGPL; this payload links it as the SDK-provided static library.
 - **[libsmb2](https://github.com/sahlberg/libsmb2):** SMB2/3 client library. License: LGPLv2.1.
-- **[curl / libcurl](https://github.com/curl/curl):** FTP/FTPS and HTTP(S) WebDAV transport, including FTP directory parsing. License: curl license; see `vendor/curl/COPYING`.
+- **[curl / libcurl](https://github.com/curl/curl):** FTP and HTTP WebDAV transport, including FTP directory parsing. License: curl license; see `vendor/curl/COPYING`.
 - **[yxml](https://dev.yorhel.nl/yxml):** Small streaming XML parser used for WebDAV responses. License: MIT; see `vendor/yxml/COPYING`.
-- **[Mbed TLS](https://github.com/Mbed-TLS/mbedtls):** TLS for remote connections in the PS5 build, supplied by the payload SDK. License: Apache-2.0 OR GPL-2.0-or-later.
-- **[OpenSSL](https://github.com/openssl/openssl):** TLS for remote connections in the Linux build. License: Apache-2.0 for OpenSSL 3.x.
 - **[ps5-payload-dev/sdk](https://github.com/ps5-payload-dev/sdk):** Payload building foundation. License: GPLv3+.
 - **[etaHEN](https://github.com/etaHEN/etaHEN):** ShellUI URI navigation used to return to the PS5 home screen before exit. License: GPLv3.
 - **[ezremote](https://github.com/cy33hc/ps5-ezremote-client):** Preview PKG info. License: GPLv2.
@@ -154,7 +152,7 @@ The project is distributed under GPLv3 or later, matching the GPLv3+ projects us
 
 Third-party projects retain their own licenses. Do not copy assets or source from the credited projects into another distribution without preserving the corresponding license notices.
 
-The curl and yxml submodules retain their original copyright and license notices, also reproduced below for binary distributions. The Linux build links the system OpenSSL library.
+The curl and yxml submodules retain their original copyright and license notices, also reproduced below for binary distributions.
 
 If distributing binaries, comply with the LGPL terms for libmicrohttpd and libsmb2 in addition to this project's GPL license.
 

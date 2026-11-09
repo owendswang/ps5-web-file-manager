@@ -996,11 +996,11 @@ function isSmbPath(path) {
 }
 
 function isRemotePath(path) {
-  return /^(?:smb|ftp|ftps|webdav|webdavs|dav|davs|http|https):\/\//.test(path);
+  return /^(?:smb|ftp|webdav|dav|http):\/\//.test(path);
 }
 
 function remoteProtocol(path) {
-  return isSmbPath(path) ? "SMB" : /^ftps?:/.test(path) ? (/^ftps:/.test(path) ? "FTPS" : "FTP") : "WebDAV";
+  return isSmbPath(path) ? "SMB" : /^ftp:/.test(path) ? "FTP" : "WebDAV";
 }
 
 function remoteRoot(path) {
@@ -1123,6 +1123,7 @@ function chooseSmbShare(shares) {
 
 async function saveStoragePath(address, password) {
   const data = await apiForm("/api/storage/add", { address: address, password: password });
+  if (data.duplicate) alert(t("storagePathExists"));
   if (isRemotePath(data.path)) {
     saveSmbPassword(data, password);
     smbReady[data.path] = Promise.resolve();
@@ -1176,7 +1177,7 @@ async function addSmbConnection() {
       if (!input || /^smb:\/\/$/i.test(input) || input === previousInput.trim()) return;
       previousInput = address;
       try {
-        const authority = /^(?:smb|ftp|ftps|webdav|webdavs|dav|davs|http|https):\/\/([^/]+)(?:\/|$)/.exec(input);
+        const authority = /^(?:smb|ftp|webdav|dav|http):\/\/([^/]+)(?:\/|$)/.exec(input);
         let clean = input;
         let password = "";
         if (authority && authority[1].indexOf("@") >= 0) {
@@ -3190,12 +3191,15 @@ Credits:
 ps5-payload-dev/websrv, ps5-payload-dev/ftpsrv,
 seregonwar/zftpd, itsPLK/ps5-payload-manager,
 itsPLK/ps5-pkg-manager, libmicrohttpd, libsmb2,
-libcurl, yxml, Mbed TLS (PS5), OpenSSL (Linux),
+libcurl (FTP/WebDAV), yxml (WebDAV XML),
 ps5-payload-dev/sdk, etaHEN, ezremote,
 owendswang/ps5-web-browser-fullscreen.
 
 License:
-GPLv3 or later. Third-party licenses apply; libmicrohttpd and libsmb2 are LGPL.`;
+GPLv3 or later. Third-party licenses apply:
+libmicrohttpd: LGPL; libsmb2: LGPLv2.1 or later.
+libcurl: curl license; yxml: MIT.
+See README.md for individual project licenses and full copyright/permission notices.`;
   aboutOverlayEl.hidden = false;
   aboutContentEl.scrollTop = 0;
   aboutCloseBtn.focus();

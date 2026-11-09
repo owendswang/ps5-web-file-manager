@@ -54,18 +54,15 @@ static _Thread_local CURLcode last_curl_error;
 
 static void init_curl(void) { curl_init_error = curl_global_init(CURL_GLOBAL_DEFAULT); }
 int net_path(const char *p) {
-  return p && (!strncmp(p,"ftp://",6) || !strncmp(p,"ftps://",7) ||
-    !strncmp(p,"webdav://",9) || !strncmp(p,"webdavs://",10) ||
-    !strncmp(p,"dav://",6) || !strncmp(p,"davs://",7) ||
-    !strncmp(p,"http://",7) || !strncmp(p,"https://",8));
+  return p && (!strncmp(p,"ftp://",6) || !strncmp(p,"webdav://",9) ||
+    !strncmp(p,"dav://",6) || !strncmp(p,"http://",7));
 }
 int remote_path(const char *p) { return smb_path(p) || net_path(p); }
-static int ftp_path(const char *p) { return !strncmp(p,"ftp://",6) || !strncmp(p,"ftps://",7); }
+static int ftp_path(const char *p) { return !strncmp(p,"ftp://",6); }
 static int transport_url(const char *path, char *out, size_t size) {
   const char *rest = strstr(path, "://");
-  if(!rest) { errno = EINVAL; return -1; }
-  const char *scheme = ftp_path(path) ? (!strncmp(path,"ftps:",5) ? "ftps" : "ftp") :
-    (!strncmp(path,"webdavs:",8) || !strncmp(path,"davs:",5) || !strncmp(path,"https:",6) ? "https" : "http");
+  if(!rest || !net_path(path)) { errno = EINVAL; return -1; }
+  const char *scheme = ftp_path(path) ? "ftp" : "http";
   if(snprintf(out,size,"%s%s",scheme,rest) >= (int)size) { errno = ENAMETOOLONG; return -1; }
   return 0;
 }
@@ -145,8 +142,7 @@ int net_parse_address(const char *input, smb_address_t *a) {
   }
   normalized[used]=0;
   curl_free(decoded);
-  const char *scheme=ftp_path(input)?(!strncmp(input,"ftps:",5)?"ftps":"ftp"):
-    (!strncmp(input,"webdavs:",8)||!strncmp(input,"davs:",5)||!strncmp(input,"https:",6)?"webdavs":"webdav");
+  const char *scheme=ftp_path(input)?"ftp":"webdav";
   char *encoded=encode_path(normalized[0]?normalized:"/");
   if(!encoded) { errno=ENOMEM; goto done; }
   int too_long=snprintf(a->path,sizeof(a->path),"%s://%s%s%s",scheme,a->server,
@@ -162,7 +158,6 @@ done:
 
 const char *net_error_detail(void) { return last_error; }
 const char *net_error_code(int error) {
-  if(last_curl_error==CURLE_PEER_FAILED_VERIFICATION || last_curl_error==CURLE_SSL_CACERT_BADFILE)return "remote_certificate_error";
   if(error==EACCES)return "remote_password_required";
   if(error==ENOENT)return "storage_path_not_found";
   if(error==ENOTDIR)return "storage_path_not_directory";
@@ -178,10 +173,18 @@ static int perform(CURL *curl, int metadata) {
   CURLcode code=curl_easy_perform(curl);
   curl_easy_setopt(curl,CURLOPT_ERRORBUFFER,NULL);
   long status=0; curl_easy_getinfo(curl,CURLINFO_RESPONSE_CODE,&status);
+  /* PROPFIND parses its multistatus body; a write's 207 is not full success. */
+  if(code==CURLE_OK && status==207) {
+    char *method=NULL; curl_easy_getinfo(curl,CURLINFO_EFFECTIVE_METHOD,&method);
+    if(!method || strcmp(method,"PROPFIND")) {
+      code=CURLE_HTTP_RETURNED_ERROR;
+      snprintf(last_error,sizeof(last_error),"WebDAV %s: 207 Multi-Status (operation incomplete)",method?method:"request");
+    }
+  }
   last_curl_error=code;
   char *scheme=NULL; curl_easy_getinfo(curl,CURLINFO_SCHEME,&scheme);
   /* libcurl validates FTP replies, including server-specific ABOR responses. */
-  if(code==CURLE_OK && ((status>=200 && status<300) || (scheme && (!strcmp(scheme,"ftp") || !strcmp(scheme,"ftps")))))return 0;
+  if(code==CURLE_OK && ((status>=200 && status<300) || (scheme && !strcmp(scheme,"ftp"))))return 0;
   int error=EIO;
   if(status==401 || status==407 || code==CURLE_LOGIN_DENIED)error=EACCES;
   else if(status==403 || status==550 || code==CURLE_REMOTE_ACCESS_DENIED)error=EACCES;
@@ -234,7 +237,7 @@ static CURL *request_new(const char *path,const smb_address_t *auth,int director
     curl_easy_setopt(curl,CURLOPT_LOW_SPEED_LIMIT,1L);
     curl_easy_setopt(curl,CURLOPT_LOW_SPEED_TIME,30L);
     curl_easy_setopt(curl,CURLOPT_FOLLOWLOCATION,0L);
-    curl_easy_setopt(curl,CURLOPT_PROTOCOLS_STR,"ftp,ftps,http,https");
+    curl_easy_setopt(curl,CURLOPT_PROTOCOLS_STR,"ftp,http");
     curl_easy_setopt(curl,CURLOPT_FTP_SKIP_PASV_IP,1L);
     if(ftp_path(path))curl_easy_setopt(curl,CURLOPT_QUOTE,&ftp_utf8);
     curl_easy_setopt(curl,CURLOPT_SOCKOPTFUNCTION,tune_socket);
@@ -242,14 +245,9 @@ static CURL *request_new(const char *path,const smb_address_t *auth,int director
       curl_easy_setopt(curl,CURLOPT_USERNAME,auth->user[0]?auth->user:(ftp_path(path)?"anonymous":""));
       curl_easy_setopt(curl,CURLOPT_PASSWORD,auth->password);
     }
-    if(!ftp_path(path) && auth->user[0])curl_easy_setopt(curl,CURLOPT_HTTPAUTH,(long)(CURLAUTH_BASIC|CURLAUTH_DIGEST|CURLAUTH_NTLM));
+    if(!ftp_path(path) && auth->user[0])curl_easy_setopt(curl,CURLOPT_HTTPAUTH,(long)(CURLAUTH_BASIC|CURLAUTH_DIGEST));
     curl_easy_setopt(curl,CURLOPT_WRITEFUNCTION,discard_body);
     curl_easy_setopt(curl,CURLOPT_BUFFERSIZE,65536L);
-    const char *dir=getenv("WFM_CONFIG_DIR"); char ca[PATH_MAX];
-    snprintf(ca,sizeof(ca),"%s/ca-bundle.crt",dir && dir[0]?dir:"/data/wfm/config");
-    /* PS5 payloads can have a non-root real UID and a privileged effective UID. */
-    struct stat ca_st;
-    if(!stat(ca,&ca_st) && S_ISREG(ca_st.st_mode))curl_easy_setopt(curl,CURLOPT_CAINFO,ca);
   }
   curl_free(encoded); curl_url_cleanup(parsed);
   return curl;

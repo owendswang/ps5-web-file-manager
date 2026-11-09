@@ -169,7 +169,7 @@ static int parse_saved_address(const char *path, smb_address_t *a) {
 
 static int config_kind(const char *path) {
   return path[0]=='/'?1:!net_path(path)?0:
-    (!strncmp(path,"ftp://",6)||!strncmp(path,"ftps://",7))?2:3;
+    !strncmp(path,"ftp://",6)?2:3;
 }
 
 static void load_config_file(const char *name, int kind, int *migrate) {
@@ -182,6 +182,10 @@ static void load_config_file(const char *name, int kind, int *migrate) {
     line[strcspn(line, "\r\n")] = 0;
     if(!line[0] || line[0] == '#') continue;
     for(size_t i = 0; i < 3; i++) fields[i] = strsep(&p, "\t");
+    /* Ignore saved TLS connections without downgrading them or blocking other paths. */
+    if((kind==2 || kind==3) && (!strncmp(fields[0],"ftps://",7) ||
+       !strncmp(fields[0],"webdavs://",10) || !strncmp(fields[0],"davs://",7) ||
+       !strncmp(fields[0],"https://",8))) continue;
     int local = fields[0][0] == '/';
     if(p) *migrate |= CONFIG_MIGRATE_SMB; /* Discard passwords from the old four-column format. */
     /* Split local paths saved by the interim mixed format. */
@@ -580,6 +584,7 @@ enum MHD_Result api_smb_add(struct MHD_Connection *conn, const char *body, size_
   }
   pthread_mutex_lock(&config_mutex);
   size_t index = connection_index(a.path);
+  int duplicate = !connecting && index < connection_count;
   if(connecting && (index == connection_count ||
       strcmp(connections[index].address.user, a.user) || strcmp(connections[index].address.domain, a.domain))) {
     pthread_mutex_unlock(&config_mutex);
@@ -602,7 +607,7 @@ enum MHD_Result api_smb_add(struct MHD_Connection *conn, const char *body, size_
   json_escape(&json, a.path);
   strbuf_append(&json, ",\"user\":"); json_escape(&json, a.user);
   strbuf_append(&json, ",\"domain\":"); json_escape(&json, a.domain);
-  strbuf_append(&json, "}");
+  strbuf_append(&json, duplicate ? ",\"duplicate\":true}" : "}");
   return send_buffer(conn, MHD_HTTP_OK, json.data, "application/json");
 }
 
