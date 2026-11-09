@@ -28,7 +28,7 @@ LINUX_BIN  := web-file-mgr-linux
 PS5_DEBUG  := $(if $(filter debug,$(MAKECMDGOALS)),1,0)
 PS5_BUILD_DIR := .build-ps5/$(if $(filter debug,$(MAKECMDGOALS)),debug,release)
 PS5_BUILD_BIN := $(PS5_BUILD_DIR)/$(BIN)
-COMMON_SRCS := src/main.c src/websrv.c src/filemgr.c src/file_response.c src/task.c src/upload.c src/download.c src/text.c src/list.c src/space.c src/fs_util.c src/json_util.c src/path_util.c src/asset.c src/mime.c src/notify.c src/pkg_installer.c src/pkg_info.c src/archive_extract.c src/archive_helper.c src/smb.c src/vfs.c src/transfer.c
+COMMON_SRCS := src/main.c src/websrv.c src/filemgr.c src/file_response.c src/task.c src/upload.c src/download.c src/text.c src/list.c src/space.c src/fs_util.c src/json_util.c src/path_util.c src/asset.c src/mime.c src/notify.c src/pkg_installer.c src/pkg_info.c src/archive_extract.c src/archive_helper.c src/smb.c src/remote.c src/vfs.c src/transfer.c vendor/yxml/yxml.c
 PS5_SRCS    := $(COMMON_SRCS) src/app_installer.c src/browser_patch.c .build-fullscreen/hbc_patch.c
 HEADERS     := $(wildcard src/*.h)
 FULLSCREEN_HEAD := $(shell if test -f vendor/browser-fullscreen/.git; then git -C vendor/browser-fullscreen rev-parse --git-path HEAD; fi)
@@ -38,6 +38,13 @@ SMB2_INPUTS := $(SMB2_HEAD) $(wildcard vendor/libsmb2/CMakeLists.txt vendor/libs
 SMB2_CMAKE_FLAGS := -DBUILD_SHARED_LIBS=OFF -DENABLE_LIBKRB5=OFF -DENABLE_GSSAPI=OFF -DENABLE_EXAMPLES=OFF -DCMAKE_BUILD_TYPE=Release
 SMB2_LINUX_LIB := .build-smb2/linux/build/lib/libsmb2.a
 SMB2_PS5_LIB := .build-smb2/ps5/build/lib/libsmb2.a
+CURL_HEAD := $(shell git -C vendor/curl rev-parse --git-path HEAD 2>/dev/null)
+CURL_INPUTS := $(CURL_HEAD) $(wildcard vendor/curl/lib/*.[ch] vendor/curl/CMake/*.cmake) vendor/curl/CMakeLists.txt
+CURL_LIB := .build-curl/ps5/lib/libcurl.a
+CURL_LINUX_LIB := .build-curl/linux/lib/libcurl.a
+CURL_FLAGS := -DBUILD_SHARED_LIBS=OFF -DBUILD_STATIC_LIBS=ON -DBUILD_CURL_EXE=OFF -DBUILD_TESTING=OFF -DCURL_ENABLE_EXPORT_TARGET=OFF -DCURL_USE_PKGCONFIG=OFF -DCURL_USE_LIBPSL=OFF -DCURL_USE_LIBSSH2=OFF -DCURL_USE_LIBSSH=OFF -DCURL_USE_GSSAPI=OFF -DCURL_ZLIB=OFF -DCURL_BROTLI=OFF -DCURL_ZSTD=OFF -DUSE_NGHTTP2=OFF -DUSE_LIBIDN2=OFF -DCURL_DISABLE_LDAP=ON -DCURL_DISABLE_LDAPS=ON -DCURL_DISABLE_DICT=ON -DCURL_DISABLE_TELNET=ON -DCURL_DISABLE_TFTP=ON -DCURL_DISABLE_POP3=ON -DCURL_DISABLE_IMAP=ON -DCURL_DISABLE_SMTP=ON -DCURL_DISABLE_GOPHER=ON -DCURL_DISABLE_MQTT=ON -DCURL_DISABLE_RTSP=ON -DCURL_DISABLE_FILE=ON -DENABLE_THREADED_RESOLVER=OFF -DCMAKE_BUILD_TYPE=MinSizeRel
+CURL_FLAGS += -DCURL_DISABLE_IPFS=ON -DCURL_DISABLE_WEBSOCKETS=ON -DCURL_DISABLE_ALTSVC=ON -DCURL_DISABLE_HSTS=ON -DCURL_DISABLE_COOKIES=ON -DCURL_DISABLE_PROXY=ON -DCURL_ENABLE_NTLM=ON
+CURL_FLAGS += -DCURL_DISABLE_MIME=ON -DCURL_DISABLE_FORM_API=ON -DCURL_DISABLE_NETRC=ON -DCURL_DISABLE_AWS=ON -DCURL_DISABLE_PROGRESS_METER=ON
 LINUX_SRCS  := $(COMMON_SRCS)
 BASE_ASSETS := $(filter-out %.dds,$(wildcard assets/*))
 ifneq ($(filter linux,$(MAKECMDGOALS)),)
@@ -53,14 +60,18 @@ CFLAGS += -DWFM_DEBUG=$(PS5_DEBUG)
 # The live-discovery evidence API is shared by the fullscreen adapter and HBC parser.
 CFLAGS += -DFULLSCREEN_LIVE_PLAN=1
 CFLAGS += -Ivendor/libsmb2/include
+CFLAGS += -Ivendor/curl/include -Ivendor/yxml -DCURL_STATICLIB
 LDFLAGS := -Wl,--gc-sections
 LDADD  := `$(PKG_CONFIG) libmicrohttpd --libs`
 LDADD  += -lSceIpmi -lSceAppInstUtil -lSceUserService -lSceSystemService
+LDADD  += -lmbedtls -lmbedx509 -lmbedcrypto
 LINUX_CFLAGS := -O2 -flto=auto -Wall -Werror -Isrc -DVERSION_TAG=\"$(VERSION_TAG)\" -DTITLE_ID=\"$(TITLE_ID)\"
 LINUX_CFLAGS += `$(HOST_PKG_CONFIG) libmicrohttpd --cflags`
 LINUX_CFLAGS += -DWFM_DEBUG=1
 LINUX_CFLAGS += -Ivendor/libsmb2/include
+LINUX_CFLAGS += -Ivendor/curl/include -Ivendor/yxml -DCURL_STATICLIB
 LINUX_LDADD := `$(HOST_PKG_CONFIG) libmicrohttpd --libs` -pthread
+LINUX_LDADD += -lssl -lcrypto
 
 .PHONY: all debug linux deps linux-deps clean force-ps5-copy
 .SECONDARY: .build-smb2/linux/source.stamp .build-smb2/ps5/source.stamp
@@ -86,6 +97,7 @@ clean:
 	rm -rf .build-ps5/release .build-ps5/debug
 	rm -rf .build-smb2
 	rm -rf .build-fullscreen
+	rm -rf .build-curl
 
 gen/%.c: assets/% gen-asset-module.py | gen
 	$(PYTHON) gen-asset-module.py --path $* $< > $@
@@ -93,13 +105,13 @@ gen/%.c: assets/% gen-asset-module.py | gen
 $(BIN): $(PS5_BUILD_BIN) force-ps5-copy
 	cp $< $@
 
-$(PS5_BUILD_BIN): $(PS5_SRCS) $(HEADERS) $(GEN_SRCS) assets/icon0.png assets/param.json Makefile $(SMB2_PS5_LIB) .build-fullscreen/source.stamp
+$(PS5_BUILD_BIN): $(PS5_SRCS) $(HEADERS) $(GEN_SRCS) assets/icon0.png assets/param.json Makefile $(SMB2_PS5_LIB) $(CURL_LIB) .build-fullscreen/source.stamp
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c,$^) $(SMB2_PS5_LIB) $(LDADD)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c,$^) $(SMB2_PS5_LIB) $(CURL_LIB) $(LDADD)
 	$(STRIP) $@
 
-$(LINUX_BIN): $(LINUX_SRCS) $(HEADERS) $(GEN_SRCS) Makefile $(SMB2_LINUX_LIB)
-	$(HOST_CC) $(LINUX_CFLAGS) -o $@ $(filter %.c,$^) $(SMB2_LINUX_LIB) $(LINUX_LDADD)
+$(LINUX_BIN): $(LINUX_SRCS) $(HEADERS) $(GEN_SRCS) Makefile $(SMB2_LINUX_LIB) $(CURL_LINUX_LIB)
+	$(HOST_CC) $(LINUX_CFLAGS) -o $@ $(filter %.c,$^) $(SMB2_LINUX_LIB) $(CURL_LINUX_LIB) $(LINUX_LDADD)
 	$(HOST_STRIP) $@
 
 .build-fullscreen/source.stamp: Makefile patches/browser-fullscreen-embed.patch .gitmodules $(FULLSCREEN_INPUTS)
@@ -136,3 +148,17 @@ $(SMB2_PS5_LIB): .build-smb2/ps5/source.stamp
 	  '-DCMAKE_C_FLAGS=-flto=thin -ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables -fno-unwind-tables' \
 	  '-DCMAKE_C_FLAGS_RELEASE=-Oz -DNDEBUG'
 	$(CMAKE) --build .build-smb2/ps5/build --target smb2 --parallel 4
+
+$(CURL_LINUX_LIB): $(CURL_INPUTS) Makefile
+	$(CMAKE) -S vendor/curl -B .build-curl/linux $(CURL_FLAGS) -DCURL_USE_OPENSSL=ON -DCMAKE_C_FLAGS='-ffunction-sections -fdata-sections'
+	$(CMAKE) --build .build-curl/linux --target libcurl_static --parallel 4
+
+$(CURL_LIB): $(CURL_INPUTS) Makefile
+	$(CMAKE) -S vendor/curl -B .build-curl/ps5 $(CURL_FLAGS) -DCURL_USE_OPENSSL=OFF -DCURL_USE_MBEDTLS=ON \
+	  -DCMAKE_SYSTEM_NAME=FreeBSD -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
+	  -DCMAKE_C_COMPILER=$(PS5_PAYLOAD_SDK)/bin/prospero-clang \
+	  -DCMAKE_FIND_ROOT_PATH=$(PS5_PAYLOAD_SDK)/target -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY \
+	  '-DCMAKE_C_FLAGS_MINSIZEREL=-Oz -DNDEBUG' \
+	  -DCMAKE_C_FLAGS='-flto=thin -ffunction-sections -fdata-sections -fno-unwind-tables -fno-asynchronous-unwind-tables' \
+	  -DCMAKE_AR=$(PS5_PAYLOAD_SDK)/bin/prospero-ar -DCMAKE_RANLIB=$(PS5_PAYLOAD_SDK)/bin/prospero-ranlib
+	$(CMAKE) --build .build-curl/ps5 --target libcurl_static --parallel 4

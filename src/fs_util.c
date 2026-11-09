@@ -19,6 +19,7 @@
 
 #include "path_util.h"
 #include "smb.h"
+#include "remote.h"
 #include "vfs.h"
 
 int
@@ -39,7 +40,7 @@ fs_type_has_unix_modes(const char *type) {
 
 static int
 path_has_unix_modes(const char *path) {
-  if(smb_path(path)) return 0;
+  if(remote_path(path)) return 0;
 #ifdef __linux__
   (void)path;
   return 1;
@@ -71,7 +72,7 @@ fd_has_unix_modes(int fd) {
 
 int
 chmod_path_mode(const char *path, unsigned int mode) {
-  if(smb_path(path)) { errno = ENOTSUP; return -1; }
+  if(remote_path(path)) { errno = ENOTSUP; return -1; }
   if(!path_has_unix_modes(path)) {
     return 0;
   }
@@ -126,6 +127,11 @@ target_available_space(const char *target, unsigned long long *available) {
   unsigned long long block_size;
 
   if(target_statvfs(target, &vfs)) {
+    /* FTP has no standard quota query; DAV quota properties are optional. */
+    if(net_path(target) && errno == ENOTSUP) {
+      *available = ULLONG_MAX;
+      return 0;
+    }
     return -1;
   }
   block_size = vfs.f_frsize ? vfs.f_frsize : vfs.f_bsize;

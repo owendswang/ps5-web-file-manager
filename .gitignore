@@ -5,5 +5,4 @@ web-file-mgr-linux
 *.d
 .*
 tools/
-test/
 tests/

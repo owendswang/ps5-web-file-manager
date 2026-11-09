@@ -30,6 +30,7 @@
 #include "pkg_installer.h"
 #include "websrv.h"
 #include "smb.h"
+#include "remote.h"
 #include "vfs.h"
 #include "transfer.h"
 #include "notify.h"
@@ -144,7 +145,6 @@ int
 ensure_parent_dirs(const char *base, const char *rel) {
   char current[PATH_MAX];
   const char *p = rel;
-  size_t base_len;
 
   if(!relative_path_safe(rel)) {
     return -1;
@@ -154,7 +154,6 @@ ensure_parent_dirs(const char *base, const char *rel) {
     return -1;
   }
   strcpy(current, base);
-  base_len = strlen(current);
   while(*p) {
     const char *slash = strchr(p, '/');
     size_t len;
@@ -163,12 +162,14 @@ ensure_parent_dirs(const char *base, const char *rel) {
       return 0;
     }
     len = (size_t)(slash - rel);
-    if(base_len + (strcmp(base, "/") ? 1 : 0) + len >= sizeof(current)) {
+    char prefix[PATH_MAX];
+    if(len >= sizeof(prefix)) {
       errno = ENAMETOOLONG;
       return -1;
     }
-    snprintf(current, sizeof(current), "%s%s%.*s", base,
-             strcmp(base, "/") ? "/" : "", (int)len, rel);
+    memcpy(prefix, rel, len);
+    prefix[len] = 0;
+    if(path_join_relative(current, sizeof(current), base, prefix)) return -1;
     if(ensure_copy_dir(current)) {
       return -1;
     }
@@ -293,12 +294,13 @@ static int chmod_task_path(file_task_t *task, const char *path,
 static int count_path_bytes_sync(file_task_t *task, const char *path,
                                  const char *display,
                                  unsigned long long *total,
-                                 size_t *file_count, size_t *dir_count);
+                                 size_t *file_count, size_t *dir_count,
+                                 const char *alias_probe);
 
 static int
 count_dir_bytes_sync(file_task_t *task, const char *path, const char *display,
                      unsigned long long *total, size_t *file_count,
-                     size_t *dir_count) {
+                     size_t *dir_count, const char *alias_probe) {
   DIR *dir = opendir(path);
   struct dirent *entry;
   int ret = -1;
@@ -312,6 +314,11 @@ count_dir_bytes_sync(file_task_t *task, const char *path, const char *display,
     if(!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
       continue;
     }
+    if(alias_probe && !strcmp(entry->d_name, alias_probe)) {
+      task_set_error_code(task, "destination_inside_source", NULL);
+      errno = ELOOP;
+      goto done;
+    }
     if(task && task_cancel_requested(task)) {
       goto done;
     }
@@ -319,7 +326,7 @@ count_dir_bytes_sync(file_task_t *task, const char *path, const char *display,
        (display && path_join(display_child, sizeof(display_child), display,
                              entry->d_name)) ||
        count_path_bytes_sync(task, child, display ? display_child : NULL,
-                             total, file_count, dir_count)) {
+                             total, file_count, dir_count, alias_probe)) {
       goto done;
     }
   }
@@ -333,7 +340,7 @@ done:
 static int
 count_path_bytes_sync(file_task_t *task, const char *path, const char *display,
                       unsigned long long *total, size_t *file_count,
-                      size_t *dir_count) {
+                      size_t *dir_count, const char *alias_probe) {
   struct stat st;
 
   if(task && task_cancel_requested(task)) {
@@ -348,7 +355,7 @@ count_path_bytes_sync(file_task_t *task, const char *path, const char *display,
   if(S_ISDIR(st.st_mode)) {
     if(dir_count) (*dir_count)++;
     return count_dir_bytes_sync(task, path, display, total, file_count,
-                                dir_count);
+                                dir_count, alias_probe);
   }
   if(S_ISREG(st.st_mode)) {
     *total += (unsigned long long)st.st_size;
@@ -363,7 +370,7 @@ int
 count_task_path_bytes(file_task_t *task, const char *path, const char *display,
                       unsigned long long *total, size_t *file_count,
                       size_t *dir_count) {
-  return count_path_bytes(task, path, display, total, file_count, dir_count);
+  return count_path_bytes(task, path, display, total, file_count, dir_count, NULL);
 }
 
 static int
@@ -393,6 +400,48 @@ open_copy_temp(const char *dst, char *temp, size_t temp_size) {
   }
   errno = EEXIST;
   return -1;
+}
+
+static int
+count_transfer_source(file_task_t *task, const char *src, const char *dst,
+                       unsigned long long *total, size_t *files, size_t *dirs) {
+  if(!net_path(src) && !net_path(dst))
+    return count_path_bytes(task, src, src, total, files, dirs, NULL);
+  struct stat source, target;
+  char temp[PATH_MAX], marker_target[PATH_MAX], name[96];
+  if(lstat(src, &source)) return -1;
+  snprintf(marker_target, sizeof(marker_target), "%s", dst);
+  if(S_ISDIR(source.st_mode)) {
+    int exists = !lstat(dst, &target);
+    if(!exists && errno != ENOENT) return -1;
+    if(exists && S_ISDIR(target.st_mode) &&
+       path_join(marker_target, sizeof(marker_target), dst, ".probe")) return -1;
+  }
+  int fd = open_copy_temp(marker_target, temp, sizeof(temp));
+  if(fd < 0) return -1;
+  int result = close(fd);
+  if(!result) {
+    path_basename_copy(temp, name, sizeof(name));
+    if(S_ISREG(source.st_mode)) {
+      char source_name[PATH_MAX], target_name[PATH_MAX], parent[PATH_MAX], alias[PATH_MAX];
+      path_basename_copy(src, source_name, sizeof(source_name));
+      path_basename_copy(dst, target_name, sizeof(target_name));
+      if(!strcmp(source_name, target_name)) {
+        if(path_dirname(src, parent, sizeof(parent)) || path_join(alias, sizeof(alias), parent, name)) result = -1;
+        else if(!lstat(alias, &target)) {
+          task_set_error_code(task, "source_destination_same", NULL);
+          errno = ELOOP; result = -1;
+        } else if(errno != ENOENT) result = -1;
+      }
+    }
+    /* A target marker visible during the existing source walk proves overlap,
+       even when different protocols/roots hide the underlying file identity. */
+    if(!result) result = count_path_bytes(task, src, src, total, files, dirs, name);
+  }
+  int error = errno;
+  if(unlink(temp) && !result) return -1;
+  errno = error;
+  return result;
 }
 
 static int
@@ -649,7 +698,7 @@ move_path(file_task_t *task, const char *src, const char *dst) {
   }
 
   ret = rename(src, dst);
-  if(ret && errno == ENOENT && !smb_path(src) && !smb_path(dst)) {
+  if(ret && errno == ENOENT && !remote_path(src) && !remote_path(dst)) {
     /* PS5 USB lookup can briefly fail for an existing Unicode directory.
        Refresh the lookups and retry once only if no target would be replaced. */
     char parent[PATH_MAX];
@@ -714,9 +763,11 @@ remove_path(file_task_t *task, const char *path) {
 static int
 resolve_destination(const char *src, const char *dst, char *out, size_t size) {
   struct stat st;
+  char name[PATH_MAX];
+  path_basename_copy(src,name,sizeof(name));
 
   if(!stat(dst, &st) && S_ISDIR(st.st_mode)) {
-    return path_join(out, size, dst, path_basename(src));
+    return path_join(out, size, dst, name);
   }
   if(strlen(dst) >= size) {
     errno = ENAMETOOLONG;
@@ -761,7 +812,8 @@ validate_task_target(const char *src, const char *target, int overwrite,
     snprintf(error, error_size, "cannot check destination");
     return -1;
   }
-  if(src_st.st_dev == target_st.st_dev && src_st.st_ino == target_st.st_ino) {
+  /* FTP/WebDAV do not expose inode IDs; zero is not a file identity. */
+  if(src_st.st_ino && src_st.st_dev == target_st.st_dev && src_st.st_ino == target_st.st_ino) {
     snprintf(error, error_size, "source and destination are the same");
     errno = EINVAL;
     return -1;
@@ -788,6 +840,10 @@ move_requires_copy(const char *src, const char *target) {
 
   if(lstat(src, &src_st)) {
     return -1;
+  }
+  if(net_path(src) || net_path(target)) {
+    int compatible = net_rename_compatible(src, target);
+    if(compatible <= 0) return compatible ? -1 : 1;
   }
   if(!lstat(target, &target_st)) {
     if(S_ISDIR(src_st.st_mode) && S_ISDIR(target_st.st_mode)) {
@@ -834,7 +890,8 @@ check_task_targets_writable(file_task_t *task, char *error, size_t error_size,
 static int
 task_target_path(file_task_t *task, const char *src, char *out, size_t size) {
   if(task->src_count > 1) {
-    return path_join(out, size, task->dst, path_basename(src));
+    char name[PATH_MAX]; path_basename_copy(src,name,sizeof(name));
+    return path_join(out, size, task->dst, name);
   }
   if(strlen(task->dst) >= size) {
     errno = ENAMETOOLONG;
@@ -848,7 +905,8 @@ static int
 request_target_path(const char *src, const char *dst, size_t src_count,
                     char *out, size_t size) {
   if(src_count > 1) {
-    return path_join(out, size, dst, path_basename(src));
+    char name[PATH_MAX]; path_basename_copy(src,name,sizeof(name));
+    return path_join(out, size, dst, name);
   }
   return resolve_destination(src, dst, out, size);
 }
@@ -1004,8 +1062,8 @@ task_worker(void *arg) {
           continue;
         }
       }
-      if(count_path_bytes(task, task->srcs[i], task->srcs[i], &total,
-                          &task->file_count, &task->dir_count)) {
+      if(count_transfer_source(task, task->srcs[i], target, &total,
+                                &task->file_count, &task->dir_count)) {
         if(errno == ECANCELED || task_cancel_requested(task)) {
           task_update(task, TASK_CANCELED, task->srcs[i], 0, "canceled");
         } else {
@@ -1717,7 +1775,7 @@ api_launch_elf(struct MHD_Connection *conn, const char *body,
   struct stat st;
   enum MHD_Result result;
 
-  if(!path || (path[0] != '/' && !smb_path(path)) ||
+  if(!path || (path[0] != '/' && !remote_path(path)) ||
      !extension || strcasecmp(extension, ".elf")) {
     free(path);
     return send_json_error_detail(conn, MHD_HTTP_BAD_REQUEST,
@@ -1783,7 +1841,7 @@ api_extract(struct MHD_Connection *conn, const char *body, size_t body_size) {
   }
   separate = !strcmp(separate_text, "1");
   overwrite = overwrite_text && !strcmp(overwrite_text, "1");
-  if(smb_path(destination)) {
+  if(remote_path(destination)) {
     result = send_json_error(conn, MHD_HTTP_BAD_REQUEST,
                              "archive extraction requires local storage");
     goto done;
@@ -1811,7 +1869,7 @@ api_extract(struct MHD_Connection *conn, const char *body, size_t body_size) {
   for(size_t i = 0; i < count; i++) {
     char target[PATH_MAX];
 
-    if(smb_path(paths[i])) {
+    if(remote_path(paths[i])) {
       result = send_json_error(conn, MHD_HTTP_BAD_REQUEST,
                                "copy the archive to local storage first");
       goto done;
@@ -2121,10 +2179,10 @@ filemgr_api_request(struct MHD_Connection *conn, const char *url,
       send_json_error(conn, MHD_HTTP_METHOD_NOT_ALLOWED, "invalid method") :
       api_smb_shares(conn, body, body_size);
   }
-  if(!strcmp(url, "/api/storage/add") || !strcmp(url, "/api/smb/add") || !strcmp(url, "/api/smb/connect")) {
+  if(!strcmp(url, "/api/storage/add") || !strcmp(url,"/api/storage/connect") || !strcmp(url, "/api/smb/add") || !strcmp(url, "/api/smb/connect")) {
     return strcmp(method, MHD_HTTP_METHOD_POST) ?
       send_json_error(conn, MHD_HTTP_METHOD_NOT_ALLOWED, "invalid method") :
-      api_smb_add(conn, body, body_size, !strcmp(url, "/api/smb/connect"));
+      api_smb_add(conn, body, body_size, !strcmp(url, "/api/smb/connect") || !strcmp(url,"/api/storage/connect"));
   }
   if(!strcmp(url, "/api/storage/remove") || !strcmp(url, "/api/smb/remove")) {
     return strcmp(method, MHD_HTTP_METHOD_POST) ?

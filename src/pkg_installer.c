@@ -10,6 +10,7 @@
 #include <time.h>
 
 #include "smb.h"
+#include "remote.h"
 #include "websrv.h"
 #include "pkg_info.h"
 #include "path_util.h"
@@ -137,11 +138,13 @@ pkg_installer_install(const char *path) {
   playgo_info_t playgo_info = {0};
   int result;
   int remote;
+  char file_name[PATH_MAX];
 
   if(!path) return -1;
-  remote = smb_path(path);
+  remote = remote_path(path);
   pkg_read_details(path, &details);
-  metadata.content_name = details.title[0] ? details.title : path_basename(path);
+  path_basename_copy(path, file_name, sizeof(file_name));
+  metadata.content_name = details.title[0] ? details.title : file_name;
   metadata.content_id = details.content_id;
 #if WFM_DEBUG
   fprintf(stderr, "PKG metadata platform=%s content_id=%s title=%s icon=%d\n",

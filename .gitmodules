@@ -4,3 +4,9 @@
 [submodule "vendor/browser-fullscreen"]
 	path = vendor/browser-fullscreen
 	url = https://github.com/owendswang/ps5-web-browser-fullscreen.git
+[submodule "vendor/yxml"]
+	path = vendor/yxml
+	url = https://github.com/getdnsapi/yxml.git
+[submodule "vendor/curl"]
+	path = vendor/curl
+	url = https://github.com/curl/curl.git

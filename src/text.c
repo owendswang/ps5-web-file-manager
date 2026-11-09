@@ -350,6 +350,7 @@ write_text_atomic(const char *path, const char *body, size_t body_size,
   if((fd = open(temp, O_WRONLY | O_CREAT | O_EXCL, 0600)) < 0) {
     return -1;
   }
+  wfm_set_transfer_size(fd, body_size);
   if(transfer_write_all(NULL, fd, path, body, body_size, NULL)) goto done;
   if(fchmod(fd, mode & 07777) && !ignore_chmod_error(errno)) {
     goto done;

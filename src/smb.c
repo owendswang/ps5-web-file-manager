@@ -1,4 +1,5 @@
 #include "smb.h"
+#include "remote.h"
 #include "filemgr_internal.h"
 #include "path_util.h"
 #include "transfer.h"
@@ -158,6 +159,7 @@ static int builtin_local_path(const char *path) {
 }
 
 static int parse_saved_address(const char *path, smb_address_t *a) {
+  if(net_path(path)) return net_parse_address(path,a);
   if(path[0] != '/') return smb_parse_address(path, a);
   memset(a, 0, sizeof(*a));
   if(copy_field(a->path, sizeof(a->path), path, strlen(path))) return -1;
@@ -165,7 +167,12 @@ static int parse_saved_address(const char *path, smb_address_t *a) {
   return 0;
 }
 
-static void load_config_file(const char *name, int custom, int *migrate) {
+static int config_kind(const char *path) {
+  return path[0]=='/'?1:!net_path(path)?0:
+    (!strncmp(path,"ftp://",6)||!strncmp(path,"ftps://",7))?2:3;
+}
+
+static void load_config_file(const char *name, int kind, int *migrate) {
   char path[PATH_MAX], line[PATH_MAX + 1100];
   if(snprintf(path, sizeof(path), "%s/%s", config_dir(), name) >= (int)sizeof(path)) { config_error = ENAMETOOLONG; return; }
   FILE *file = fopen(path, "rb");
@@ -178,9 +185,9 @@ static void load_config_file(const char *name, int custom, int *migrate) {
     int local = fields[0][0] == '/';
     if(p) *migrate |= CONFIG_MIGRATE_SMB; /* Discard passwords from the old four-column format. */
     /* Split local paths saved by the interim mixed format. */
-    if(local && !custom) *migrate |= CONFIG_MIGRATE_SMB | CONFIG_MIGRATE_CUSTOM;
+    if(local && kind==0) *migrate |= CONFIG_MIGRATE_SMB | CONFIG_MIGRATE_CUSTOM;
     smb_address_t a;
-    if((custom && !local) || (!local && !fields[2]) || (p && strchr(p, '\t')) ||
+    if((kind==1 && !local) || (!local && (config_kind(fields[0])!=kind || !fields[2])) || (p && strchr(p, '\t')) ||
        (local && ((fields[1] && fields[1][0]) || (fields[2] && fields[2][0]))) ||
        parse_saved_address(fields[0], &a) ||
        (!local && (copy_field(a.user, sizeof(a.user), fields[1], strlen(fields[1])) ||
@@ -205,6 +212,8 @@ static void load_config_file(const char *name, int custom, int *migrate) {
 static void load_config(void) {
   int migrate = 0;
   load_config_file("smb.conf", 0, &migrate);
+  if(!config_error) load_config_file("ftp.conf", 2, &migrate);
+  if(!config_error) load_config_file("webdav.conf", 3, &migrate);
   if(!config_error) load_config_file("custom.conf", 1, &migrate);
   /* Write migrated local paths first; leave smb.conf intact if that fails. */
   if(!config_error && (migrate & CONFIG_MIGRATE_CUSTOM) && save_config(1)) config_error = errno;
@@ -225,9 +234,11 @@ static int ensure_config_dir(void) {
   return 0;
 }
 
-static int save_config(int local) {
+static int save_config(int kind) {
   char path[PATH_MAX], temp[PATH_MAX];
-  const char *name = local ? "custom.conf" : "smb.conf";
+  static const char *names[]={"smb.conf","custom.conf","ftp.conf","webdav.conf"};
+  const char *name=names[kind];
+  int local=kind==1;
   if(ensure_config_dir()) return -1;
   if(snprintf(path, sizeof(path), "%s/%s", config_dir(), name) >= (int)sizeof(path) ||
      snprintf(temp, sizeof(temp), "%s/%s.tmp", config_dir(), name) >= (int)sizeof(temp)) {
@@ -240,7 +251,7 @@ static int save_config(int local) {
   int result = fchmod(fd, 0600);
   for(size_t i = 0; !result && i < connection_count; i++) {
     smb_address_t *a = &connections[i].address;
-    if((a->path[0] == '/') != local) continue;
+    if(config_kind(a->path)!=kind) continue;
     if((local ? fprintf(file, "%s\n", a->path) :
                 fprintf(file, "%s\t%s\t%s\n", a->path, a->user, a->domain)) < 0) result = -1;
   }
@@ -320,6 +331,25 @@ struct smb2_context *smb_connect_path(const char *path, smb_address_t *a) {
   pthread_mutex_unlock(&config_mutex);
   if(!matched) { errno = ENOENT; return NULL; }
   return connect_address(a);
+}
+
+int storage_remote_address(const char *path,smb_address_t *address) {
+  pthread_once(&config_once,load_config);
+  if(config_error) { errno=config_error; return -1; }
+  pthread_mutex_lock(&config_mutex);
+  size_t found=connection_count,length=0;
+  for(size_t i=0;i<connection_count;i++) {
+    const char *root=connections[i].address.path;
+    if(strlen(root)>length && smb_path_current(path,root)) { found=i; length=strlen(root); }
+  }
+  int result=-1;
+  if(found<connection_count) {
+    *address=connections[found].address;
+    result=0;
+    if(!connections[found].authenticated && address->user[0] &&
+       strcasecmp(address->user,"anonymous") && strcasecmp(address->user,"Guest")) { errno=EACCES; result=-1; }
+  } else errno=ENOENT;
+  pthread_mutex_unlock(&config_mutex); return result;
 }
 
 typedef struct share_enum_result {
@@ -463,7 +493,7 @@ enum MHD_Result api_smb_add(struct MHD_Connection *conn, const char *body, size_
   else if(local) {
     invalid = !realpath(input, a.path);
     if(!invalid && strpbrk(a.path, "\r\n\t")) { errno = EINVAL; invalid = 1; }
-  } else invalid = smb_parse_address(input, &a);
+  } else invalid = net_path(input)?net_parse_address(input,&a):smb_parse_address(input, &a);
   if(invalid) {
     int error = errno;
     free(input); free(password);
@@ -487,10 +517,10 @@ enum MHD_Result api_smb_add(struct MHD_Connection *conn, const char *body, size_
       strcpy(a.domain, connections[index].address.domain);
     }
     pthread_mutex_unlock(&config_mutex);
-    if(!found) { free(password); return send_json_error_detail(conn, MHD_HTTP_NOT_FOUND, "SMB connection not found", "smb_connection_not_found", NULL); }
+    if(!found) { free(password); return send_json_error_detail(conn, MHD_HTTP_NOT_FOUND, "Remote connection not found", "smb_connection_not_found", NULL); }
   }
   if(!local && password && copy_field(a.password, sizeof(a.password), password, strlen(password))) {
-    free(password); return send_json_error_detail(conn, MHD_HTTP_BAD_REQUEST, "invalid SMB password", "smb_password_invalid", NULL);
+    free(password); return send_json_error_detail(conn, MHD_HTTP_BAD_REQUEST, "invalid remote password", "smb_password_invalid", NULL);
   }
   free(password);
   if(has_active_task()) return send_json_error(conn, MHD_HTTP_CONFLICT, "another task is running");
@@ -504,6 +534,18 @@ enum MHD_Result api_smb_add(struct MHD_Connection *conn, const char *body, size_
     }
     closedir(dir);
     local_space(&added);
+  } else if(net_path(a.path)) {
+    struct statvfs space;
+    if(net_probe(&a,&space)) {
+      int error=errno;
+      return send_json_error_detail(conn,MHD_HTTP_BAD_GATEWAY,"Remote connection failed",
+                                    net_error_code(error),net_error_detail());
+    }
+    added.available=space.f_frsize?1:-1;
+    if(space.f_frsize) {
+      added.free_bytes=(unsigned long long)space.f_bavail*space.f_frsize;
+      added.total_bytes=(unsigned long long)space.f_blocks*space.f_frsize;
+    }
   } else {
     smb_lock();
     struct smb2_context *ctx = connect_address(&a);
@@ -541,7 +583,7 @@ enum MHD_Result api_smb_add(struct MHD_Connection *conn, const char *body, size_
   if(connecting && (index == connection_count ||
       strcmp(connections[index].address.user, a.user) || strcmp(connections[index].address.domain, a.domain))) {
     pthread_mutex_unlock(&config_mutex);
-    return send_json_error_detail(conn, MHD_HTTP_CONFLICT, "SMB connection changed; try again", "smb_connection_changed", NULL);
+    return send_json_error_detail(conn, MHD_HTTP_CONFLICT, "Remote connection changed; try again", "smb_connection_changed", NULL);
   }
   if(index == connection_count && connection_count == SMB_CONNECTION_MAX) {
     pthread_mutex_unlock(&config_mutex);
@@ -551,7 +593,7 @@ enum MHD_Result api_smb_add(struct MHD_Connection *conn, const char *body, size_
   size_t old_count = connection_count;
   connections[index] = added;
   if(index == connection_count) connection_count++;
-  int result = connecting ? 0 : save_config(local);
+  int result = connecting ? 0 : save_config(config_kind(a.path));
   if(result) { connections[index] = old; connection_count = old_count; }
   pthread_mutex_unlock(&config_mutex);
   if(result) return send_json_error_detail(conn, MHD_HTTP_INTERNAL_SERVER_ERROR, "could not save storage configuration", "storage_config_save_failed", strerror(errno));
@@ -566,7 +608,7 @@ enum MHD_Result api_smb_add(struct MHD_Connection *conn, const char *body, size_
 
 enum MHD_Result api_smb_remove(struct MHD_Connection *conn, const char *body, size_t size) {
   char *path = fs_path_value(body_form_value(body, size, "path"));
-  if(!path || (!smb_path(path) && path[0] != '/') || strlen(path) >= PATH_MAX) {
+  if(!path || (!remote_path(path) && path[0] != '/') || strlen(path) >= PATH_MAX) {
     free(path);
     return send_json_error(conn, MHD_HTTP_BAD_REQUEST, "invalid saved path");
   }
@@ -589,7 +631,7 @@ enum MHD_Result api_smb_remove(struct MHD_Connection *conn, const char *body, si
     size_t following = connection_count - index - 1;
     memmove(connections + index, connections + index + 1, following * sizeof(*connections));
     connection_count--;
-    result = save_config(removed.address.path[0] == '/');
+    result = save_config(config_kind(removed.address.path));
     if(result) {
       memmove(connections + index + 1, connections + index, following * sizeof(*connections));
       connections[index] = removed;
@@ -609,12 +651,19 @@ static void *refresh_spaces(void *current) {
   pthread_mutex_unlock(&config_mutex);
   for(size_t i = 0; snapshot && i < count; i++) {
     saved_smb_t *saved = &snapshot[i];
-    if(smb_path(saved->address.path) && (strcmp(saved->address.path, current) ||
-       (!saved->authenticated && strcasecmp(saved->address.user, "Guest") &&
+    if(remote_path(saved->address.path) && (strcmp(saved->address.path, current) ||
+       (!saved->authenticated && saved->address.user[0] && strcasecmp(saved->address.user, "Guest") &&
         strcasecmp(saved->address.user, "anonymous")))) continue;
     if(time(NULL) - saved->checked_at >= 30 && !has_active_task()) {
       if(saved->address.path[0] == '/') {
         local_space(saved);
+      } else if(net_path(saved->address.path)) {
+        struct statvfs vfs;
+        saved->available=net_probe(&saved->address,&vfs)?0:vfs.f_frsize?1:-1;
+        if(saved->available==1) {
+          saved->free_bytes=(unsigned long long)vfs.f_bavail*vfs.f_frsize;
+          saved->total_bytes=(unsigned long long)vfs.f_blocks*vfs.f_frsize;
+        }
       } else {
         smb_lock();
         struct smb2_context *ctx = connect_address(&saved->address);

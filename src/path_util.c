@@ -1,4 +1,6 @@
 #include "path_util.h"
+#include "remote.h"
+#include <curl/curl.h>
 
 #include <ctype.h>
 #include <errno.h>
@@ -229,10 +231,28 @@ path_basename_copy(const char *path, char *out, size_t size) {
   }
   memcpy(out, base, len);
   out[len] = 0;
+  if(net_path(path)) {
+    char *decoded=curl_easy_unescape(NULL,out,0,NULL);
+    if(decoded) { snprintf(out,size,"%s",decoded); curl_free(decoded); }
+  }
 }
 
 int
 path_dirname(const char *path, char *out, size_t size) {
+  if(net_path(path)) {
+    const char *authority=strstr(path,"://")+3;
+    const char *slash=strchr(authority,'/');
+    if(!slash || !slash[1]) {
+      if(strlen(path)>=size)return -1;
+      strcpy(out,path); return 0;
+    }
+    const char *last=strrchr(slash,'/');
+    if(last==slash) {
+      size_t len=(size_t)(slash-path);
+      if(len>=size)return -1;
+      memcpy(out,path,len); out[len]=0; return 0;
+    }
+  }
   if(!strncmp(path, "smb://", 6)) {
     const char *share = strchr(path + 6, '/');
     const char *child = share ? strchr(share + 1, '/') : NULL;
@@ -266,6 +286,7 @@ path_join(char *out, size_t size, const char *dir, const char *name) {
     errno = EINVAL;
     return -1;
   }
+  if(net_path(dir)) return net_join(out,size,dir,name);
   n = snprintf(out, size, "%s%s%s", dir,
                (strcmp(dir, "/") && dir[strlen(dir) - 1] != '/') ? "/" : "",
                name);
@@ -314,6 +335,17 @@ path_join_relative(char *out, size_t size, const char *dir, const char *rel) {
 
   if(!relative_path_safe(rel)) {
     return -1;
+  }
+  if(net_path(dir)) {
+    char current[PATH_MAX];
+    char *copy=strdup(rel),*save=NULL;
+    if(!copy)return -1;
+    snprintf(current,sizeof(current),"%s",dir);
+    for(char *part=strtok_r(copy,"/",&save);part;part=strtok_r(NULL,"/",&save)) {
+      if(path_join(out,size,current,part)) { free(copy); return -1; }
+      snprintf(current,sizeof(current),"%s",out);
+    }
+    free(copy); return 0;
   }
   n = snprintf(out, size, "%s%s%s", dir,
                (strcmp(dir, "/") && dir[strlen(dir) - 1] != '/') ? "/" : "",

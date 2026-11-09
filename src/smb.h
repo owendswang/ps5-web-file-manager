@@ -20,6 +20,8 @@ typedef struct smb_address {
 int smb_path(const char *path);
 int smb_parse_address(const char *input, smb_address_t *address);
 int smb_path_current(const char *current, const char *root);
+/* Snapshot credentials for an already saved remote root; passwords stay in RAM. */
+int storage_remote_address(const char *path, smb_address_t *address);
 /* Serialize libsmb2 calls: its context registry is global, including sync calls. */
 void smb_lock(void);
 void smb_unlock(void);

@@ -284,7 +284,8 @@ tar_prepare_next(tar_stream_t *s) {
     }
     if(s->path_index < s->path_count) {
       const char *path = s->paths[s->path_index++];
-      if(tar_start_path(s, path, path_basename(path))) {
+      char name[PATH_MAX]; path_basename_copy(path,name,sizeof(name));
+      if(tar_start_path(s, path, name)) {
         return -1;
       }
       continue;

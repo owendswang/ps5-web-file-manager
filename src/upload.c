@@ -497,7 +497,7 @@ filemgr_upload_begin(struct MHD_Connection *conn, void **upload_ctx) {
     goto fail;
   }
   ctx->stage = "allocating upload buffer";
-  wfm_set_transfer_size(ctx->fd, ctx->expected);
+  if(size_text) wfm_set_transfer_size(ctx->fd, ctx->expected);
   if(!(ctx->buffer = malloc(UPLOAD_BUFFER_SIZE))) {
     ctx->failed = 1;
     ctx->error = ENOMEM;

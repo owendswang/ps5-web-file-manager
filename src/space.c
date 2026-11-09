@@ -12,6 +12,7 @@
 #include "json_util.h"
 #include "path_util.h"
 #include "smb.h"
+#include "remote.h"
 
 static unsigned long long
 vfs_bytes(fsblkcnt_t blocks, unsigned long block_size) {
@@ -120,7 +121,7 @@ api_space(struct MHD_Connection *conn) {
     strbuf_append(&b, ",\"path\":");
     json_escape(&b, paths[i]);
     strbuf_printf(&b, ",\"free\":%llu,\"total\":%llu,\"current\":%s}",
-                  free_bytes, total_bytes, smb_path(current) ? "false" : "true");
+                  free_bytes, total_bytes, remote_path(current) ? "false" : "true");
   }
 #endif
   smb_append_spaces(&b, current, &first);
