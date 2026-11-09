@@ -626,20 +626,21 @@ copy_path(file_task_t *task, const char *src, const char *dst) {
   return -1;
 }
 
+static int move_requires_copy(const char *src, const char *target);
+
 static int
 move_path(file_task_t *task, const char *src, const char *dst) {
   struct stat src_st;
   struct stat dst_st;
-  int dst_exists;
+  int needs_copy = move_requires_copy(src, dst);
   int ret;
 
-  if(lstat(src, &src_st)) {
+  if(needs_copy < 0) {
     return -1;
   }
-  dst_exists = !lstat(dst, &dst_st);
   task_update(task, TASK_RUNNING, dst, 0, NULL);
 
-  if(dst_exists && S_ISDIR(src_st.st_mode) && S_ISDIR(dst_st.st_mode)) {
+  if(needs_copy) {
     ret = copy_path(task, src, dst);
     if(!ret) {
       ret = finish_copied_move(task, src);
@@ -779,7 +780,7 @@ validate_task_target(const char *src, const char *target, int overwrite,
 }
 
 static int
-move_requires_space_check(const char *src, const char *target) {
+move_requires_copy(const char *src, const char *target) {
   struct stat src_st;
   struct stat target_st;
   struct stat dst_dir_st;
@@ -994,7 +995,7 @@ task_worker(void *arg) {
         }
       }
       if(task->op == TASK_MOVE) {
-        needs_space = move_requires_space_check(task->srcs[i], target);
+        needs_space = move_requires_copy(task->srcs[i], target);
         if(needs_space < 0) {
           task_update(task, TASK_FAILED, task->srcs[i], 0, strerror(errno));
           return NULL;
