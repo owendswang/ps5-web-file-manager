@@ -17,12 +17,10 @@ static int patch_quiet_log(const char *text, ...) { (void)text; return 0; }
 #define perror(text) ((void)(text))
 #endif
 
-/* Compile one copy for both operations, with the upstream `make test` flags. */
+/* Compile one copy for both operations, with upstream release flags. */
 #define RESTORE patch_restore
-#define FULLSCREEN_SAFE_SCAN 1
-#define TEST_HERMES_EXPORT 0
-#define TEST_HBC_EXPORT 0
-#define FULLSCREEN_LIVE_PLAN 1
+#define FULLSCREEN_SAFE_SCAN 0
+#define FULLSCREEN_LIVE_PLAN 0
 #define EXPORT_FIXED_PROFILE 0
 #define DIAG_DEEP 1
 #define HYBRID_BROWSER_URL patch_url
@@ -48,6 +46,7 @@ patch_failure_text(const char *failure) {
     {"unexpected browser patch bytes", "浏览器补丁位置的内容不符合预期"},
     {"patch write or verification error", "补丁写入或校验失败"},
     {"rollback verification error", "回滚校验失败"},
+    {"cannot detach from ShellUI", "无法脱离 ShellUI 进程"},
     {"ShellUI exited during cleanup", "ShellUI 在收尾时退出"},
     {"JSC native image or exports unavailable", "无法读取 JSC 模块或导出符号"},
     {"cannot stop ShellUI for JSC validation", "无法暂停 ShellUI 以校验 JSC"},
@@ -73,8 +72,12 @@ struct patch_workspace {
   __typeof__(hybrid_discovered_native) native;
   __typeof__(jsc_record) jsc;
   __typeof__(scan_native_probes) probes;
+#if FULLSCREEN_LIVE_PLAN
   __typeof__(hbc_candidate_inventory) inventory;
+#if DIAG_DEEP
   __typeof__(hmi_budget) budget;
+#endif
+#endif
   __typeof__(anchor_last_graph) graph;
   __typeof__(anchor_open_graph) open_graph;
   uint8_t code[2][HA_CODE_BYTES];
@@ -82,14 +85,21 @@ struct patch_workspace {
 
 static void
 patch_clear_state(void) {
-  hybrid_pending = hybrid_safe_used = hybrid_discovered_valid = 0;
+  hybrid_pending = hybrid_discovered_valid = 0;
+#if FULLSCREEN_SAFE_SCAN
+  hybrid_safe_used = 0;
+#endif
+#if FULLSCREEN_LIVE_PLAN
   hybrid_live_verified = 0;
+#endif
   hybrid_cache_status = "not attempted";
   jsc_pending = 0;
   jsc_cache_status = "not attempted";
   fixed = NULL;
   hermes_base = fixed_read_bytes = fixed_read_calls = 0;
+#if !FULLSCREEN_HYBRID || FULLSCREEN_SAFE_SCAN
   scan_omitted_oversized_bytes = 0;
+#endif
   anchor_report_code(0, NULL, NULL);
 }
 
@@ -114,8 +124,12 @@ browser_patch(int restore, const char *url, int zh) {
   hybrid_discovered_native_state = &work->native;
   jsc_record_state = &work->jsc;
   scan_native_probes_state = &work->probes;
+#if FULLSCREEN_LIVE_PLAN
   hbc_candidate_inventory_state = &work->inventory;
+#if DIAG_DEEP
   hmi_budget_state = &work->budget;
+#endif
+#endif
   anchor_last_graph_state = &work->graph;
   anchor_open_graph_state = &work->open_graph;
   anchor_code_state = work->code;
@@ -130,8 +144,12 @@ browser_patch(int restore, const char *url, int zh) {
   hybrid_discovered_native_state = NULL;
   jsc_record_state = NULL;
   scan_native_probes_state = NULL;
+#if FULLSCREEN_LIVE_PLAN
   hbc_candidate_inventory_state = NULL;
+#if DIAG_DEEP
   hmi_budget_state = NULL;
+#endif
+#endif
   anchor_last_graph_state = NULL;
   anchor_open_graph_state = NULL;
   anchor_code_state = NULL;

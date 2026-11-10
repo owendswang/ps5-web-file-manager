@@ -137,7 +137,7 @@ This project was built with reference to these projects:
 - **[ps5-payload-dev/ftpsrv](https://github.com/ps5-payload-dev/ftpsrv):** PS5 payload conventions, home screen launcher/install flow reference, process handling style and startup installation reference. License: GPLv3+.
 - **[seregonwar/zftpd](https://github.com/seregonwar/zftpd):** PS5 TCP socket buffer tuning and high-throughput transfer behavior reference. License: MIT.
 - **[itsPLK/ps5-payload-manager](https://github.com/itsPLK/ps5-payload-manager):** Payload building behavior and native browser launch reference. License: GPLv3.
-- **[owendswang/ps5-web-browser-fullscreen](https://github.com/owendswang/ps5-web-browser-fullscreen):** Browser fullscreen/restore implementation, including test-mode discovery and INI diagnostics. License: GPLv3+.
+- **[owendswang/ps5-web-browser-fullscreen](https://github.com/owendswang/ps5-web-browser-fullscreen):** Browser fullscreen/restore implementation. License: GPLv3+.
 - **[libmicrohttpd](https://ftp.gnu.org/gnu/libmicrohttpd/):** Used as the embedded HTTP server library. It is licensed by GNU under the LGPL; this payload links it as the SDK-provided static library.
 - **[libsmb2](https://github.com/sahlberg/libsmb2):** SMB2/3 client library. License: LGPLv2.1.
 - **[curl / libcurl](https://github.com/curl/curl):** FTP and HTTP WebDAV transport, including FTP directory parsing. License: curl license; see `vendor/curl/COPYING`.

@@ -1,25 +1,50 @@
+diff --git a/diagnostics.h b/diagnostics.h
+--- a/diagnostics.h
++++ b/diagnostics.h
+@@ -18,7 +18,8 @@
+     char engine[16],operation[16],stage[64],reason[256],summary[256],cache[80];
+     char hermes[8],jsc[8],events[DIAG_EVENTS][DIAG_EVENT_BYTES];
+ };
+-static struct diagnostic_report diagnostic;
++static struct diagnostic_report *diagnostic_state;
++#define diagnostic (*diagnostic_state)
+ static inline void diag_ascii(char *text) {
+     for(unsigned char *p=(unsigned char *)text;*p;p++)if(*p<32 || *p>126)*p='?';
+     char *start=text; while(*start==' ')start++;
 diff --git a/fullscreen_fast_locator.h b/fullscreen_fast_locator.h
 --- a/fullscreen_fast_locator.h
 +++ b/fullscreen_fast_locator.h
-@@ -33,3 +33,4 @@
+@@ -30,7 +30,8 @@
+ #endif
+ static int trace(int request, int pid);
+ #if FULLSCREEN_HYBRID
 -static struct fp_native hybrid_discovered_native;
 +static struct fp_native *hybrid_discovered_native_state;
 +#define hybrid_discovered_native (*hybrid_discovered_native_state)
  static int hybrid_discovered_valid;
  #endif
-@@ -121,3 +122,4 @@
+ static int anchor_copy(void *context, uintptr_t address, void *out, size_t size) {
+@@ -119,13 +120,15 @@
+     uintptr_t image;
+     struct ha_layout layout;
      uint8_t headers[2][128];
 -} anchor_last_graph;
 +} *anchor_last_graph_state;
 +#define anchor_last_graph (*anchor_last_graph_state)
  struct anchor_probe_budget { int pid; size_t calls,bytes; unsigned exhausted; };
-@@ -127,3 +129,4 @@
+ #if DIAG_DEEP
+ static struct {
+     int valid,pid;
      uintptr_t image,bases[2];
 -} anchor_open_graph;
 +} *anchor_open_graph_state;
 +#define anchor_open_graph (*anchor_open_graph_state)
  static inline int anchor_probe_read(void *context,uintptr_t address,void *out,size_t length) {
-@@ -165,6 +168,8 @@ static inline void anchor_phase_snapshot(const char *phase,int pid,uintptr_t image)
+     struct anchor_probe_budget *b=context;
+     if(b->calls>=1024 || length>262144-b->bytes) { b->exhausted=1; return -1; }
+@@ -163,8 +166,10 @@
+     errno=saved_errno;
+ }
  #endif
 +static uint8_t (*anchor_code_state)[HA_CODE_BYTES];
  static void anchor_report_code(unsigned index,const char *label,const uint8_t *code) {
@@ -29,18 +54,13 @@ diff --git a/fullscreen_fast_locator.h b/fullscreen_fast_locator.h
      if((valid&(1U<<index)) && !memcmp(previous[index],code,HA_CODE_BYTES)) {
          DIAG_EVENT("%s unchanged from previous attempt; complete first window retained",label);
          (void)label; return;
-diff --git a/diagnostics.h b/diagnostics.h
---- a/diagnostics.h
-+++ b/diagnostics.h
-@@ -27,2 +27,3 @@
--static struct diagnostic_report diagnostic;
-+static struct diagnostic_report *diagnostic_state;
-+#define diagnostic (*diagnostic_state)
- static inline void diag_ascii(char *text) {
 diff --git a/fullscreen_hybrid.h b/fullscreen_hybrid.h
 --- a/fullscreen_hybrid.h
 +++ b/fullscreen_hybrid.h
-@@ -22,3 +22,5 @@
+@@ -16,8 +16,10 @@
+ #ifndef FULLSCREEN_SAFE_SCAN
+ #define FULLSCREEN_SAFE_SCAN 0
+ #endif
 -static struct hybrid_cache hybrid_record;
 -static struct hybrid_cache hybrid_disk_record;
 +static struct hybrid_cache *hybrid_record_state;
@@ -48,18 +68,12 @@ diff --git a/fullscreen_hybrid.h b/fullscreen_hybrid.h
 +static struct hybrid_cache *hybrid_disk_record_state;
 +#define hybrid_disk_record (*hybrid_disk_record_state)
  static int hybrid_pending;
-diff --git a/jsc_fullscreen.h b/jsc_fullscreen.h
---- a/jsc_fullscreen.h
-+++ b/jsc_fullscreen.h
-@@ -13,2 +13,3 @@
--static struct jsc_reference_profile jsc_record;
-+static struct jsc_reference_profile *jsc_record_state;
-+#define jsc_record (*jsc_record_state)
- static int jsc_pending;
+ #if FULLSCREEN_SAFE_SCAN
+ static int hybrid_safe_used;
 diff --git a/hbc_candidate_export.h b/hbc_candidate_export.h
 --- a/hbc_candidate_export.h
 +++ b/hbc_candidate_export.h
-@@ -32,5 +32,6 @@
+@@ -29,7 +29,8 @@
      int pid;
      unsigned count,overflow,changed,unsupported;
      struct { uintptr_t base; uint8_t header[128]; } items[HBC_CANDIDATES_MAX];
@@ -67,33 +81,45 @@ diff --git a/hbc_candidate_export.h b/hbc_candidate_export.h
 +} *hbc_candidate_inventory_state;
 +#define hbc_candidate_inventory (*hbc_candidate_inventory_state)
  static inline int hbc_inventory_equal(const struct hbc_inventory *a,const struct hbc_inventory *b) {
+     if(a->pid!=b->pid || a->count!=b->count || a->overflow || b->overflow ||
+        a->changed || b->changed || a->unsupported!=b->unsupported)return 0;
 diff --git a/hbc_module_identity.h b/hbc_module_identity.h
 --- a/hbc_module_identity.h
 +++ b/hbc_module_identity.h
-@@ -10,3 +10,4 @@
+@@ -8,7 +8,8 @@
+ static struct {
+     unsigned used,reads; size_t bytes;
      struct { int pid; uintptr_t module,buffer; } seen[4];
 -} hmi_budget;
 +} *hmi_budget_state;
 +#define hmi_budget (*hmi_budget_state)
  static inline int hmi_read(struct hmi_context *c,uintptr_t address,void *out,size_t size) {
-diff --git a/scan_observations.h b/scan_observations.h
---- a/scan_observations.h
-+++ b/scan_observations.h
-@@ -10,3 +10,4 @@
-     struct { uintptr_t base; uint32_t length; uint8_t header[128]; } items[8];
--} scan_native_probes;
-+} *scan_native_probes_state;
-+#define scan_native_probes (*scan_native_probes_state)
- static inline void scan_native_reset(int pid) {
+     if(address<0x10000 || address>=0x100000000000ULL || size>0x100000000000ULL-address)return -1;
+     uint8_t *p=out;
+diff --git a/jsc_fullscreen.h b/jsc_fullscreen.h
+--- a/jsc_fullscreen.h
++++ b/jsc_fullscreen.h
+@@ -10,7 +10,8 @@
+ #ifndef JSC_NO_REFERENCE
+ #define JSC_NO_REFERENCE 0
+ #endif
+-static struct jsc_reference_profile jsc_record;
++static struct jsc_reference_profile *jsc_record_state;
++#define jsc_record (*jsc_record_state)
+ static int jsc_pending;
+ static const char *jsc_cache_status="not attempted";
+ static int jsc_write(int pid, uintptr_t address, const void *data, size_t size) {
 diff --git a/notification.h b/notification.h
 --- a/notification.h
 +++ b/notification.h
-@@ -15,8 +15,9 @@
- static void notify_result(int result, int restore, int inspect, const char *failure) {
+@@ -13,12 +13,13 @@
+ int sceKernelSendNotificationRequest(int, struct fullscreen_notification *, size_t, int);
+ 
+ static void notify_result(int result, int restore, const char *failure) {
 +    if(!result)return;
      struct fullscreen_notification request={0};
--    const char *operation=inspect?"Browser inspection":restore?"Browser layout restore":"Browser fullscreen";
-+    const char *operation=patch_zh?(restore?"还原窗口":"全屏"):inspect?"Browser inspection":restore?"Browser layout restore":"Browser fullscreen";
+-    const char *operation=restore?"Browser layout restore":"Browser fullscreen";
++    const char *operation=patch_zh?(restore?"还原窗口":"全屏"):restore?"Browser layout restore":"Browser fullscreen";
      if(result==1)
 -        snprintf(request.message,sizeof(request.message),"%s failed: %s. Diagnostics, if saved: /data/web-browser-fullscreen.ini",operation,failure);
 +        snprintf(request.message,sizeof(request.message),patch_zh?"%s失败：%s。诊断文件（若已生成）：/data/web-browser-fullscreen.ini":"%s failed: %s. Diagnostics, if saved: /data/web-browser-fullscreen.ini",operation,patch_failure_text(failure));
@@ -101,10 +127,26 @@ diff --git a/notification.h b/notification.h
 -        snprintf(request.message,sizeof(request.message),"%s succeeded; INI update failed: /data/web-browser-fullscreen.ini",operation);
 +        snprintf(request.message,sizeof(request.message),patch_zh?"%s已完成，但 INI 更新失败：/data/web-browser-fullscreen.ini":"%s succeeded; INI update failed: /data/web-browser-fullscreen.ini",operation);
      else
+         snprintf(request.message,sizeof(request.message),"%s succeeded. Reopen the browser.",operation);
+     int ret=sceKernelSendNotificationRequest(0,&request,sizeof(request),0);
+diff --git a/scan_observations.h b/scan_observations.h
+--- a/scan_observations.h
++++ b/scan_observations.h
+@@ -8,7 +8,8 @@
+     int pid;
+     size_t count;
+     struct { uintptr_t base; uint32_t length; uint8_t header[128]; } items[8];
+-} scan_native_probes;
++} *scan_native_probes_state;
++#define scan_native_probes (*scan_native_probes_state)
+ static inline void scan_native_reset(int pid) {
+     scan_native_probes.pid=pid; scan_native_probes.count=0;
+ }
 diff --git a/trace_cleanup.h b/trace_cleanup.h
 --- a/trace_cleanup.h
 +++ b/trace_cleanup.h
-@@ -9,28 +9,28 @@
+@@ -8,7 +8,8 @@
+  * an observed exit. An unresolved detach must retain the attached flag. */
  static int trace_cleanup(int pid,int *attached) {
      if(!*attached)return 0;
 -    for(unsigned attempt=1;attempt<=3;attempt++) {
@@ -113,8 +155,7 @@ diff --git a/trace_cleanup.h b/trace_cleanup.h
          if(!trace(PT_DETACH,pid)) {
              *attached=0;
              if(attempt>1)DIAG_EVENT("Final detach recovered: attempt=%u pid=%d",attempt,pid);
-             return 0;
-         }
+@@ -17,7 +18,8 @@
          int error=errno,status=0;
          pid_t child=waitpid(pid,&status,WNOHANG);
          int wait_error=child<0?errno:0;
@@ -124,9 +165,7 @@ diff --git a/trace_cleanup.h b/trace_cleanup.h
                     attempt,pid,error,(int)child,status,wait_error);
          (void)wait_error;
          if(child==pid && (WIFEXITED(status) || WIFSIGNALED(status))) {
-             *attached=0;
-             DIAG_ERROR("transaction.tracee_exited",error,"ShellUI exited during final detach: status=%#x",status);
-             errno=error;
+@@ -27,10 +29,8 @@
              return -1;
          }
          /* ECHILD alone does not prove the target exited or was detached. */

@@ -63,8 +63,8 @@ GEN_SRCS    := $(patsubst assets/%,gen/%, $(ASSETS:=.c))
 CFLAGS := -Oz -flto=thin -fno-asynchronous-unwind-tables -fno-unwind-tables -Wall -Werror -ffunction-sections -fdata-sections -Isrc -DVERSION_TAG=\"$(VERSION_TAG)\" -DTITLE_ID=\"$(TITLE_ID)\"
 CFLAGS += `$(PKG_CONFIG) libmicrohttpd --cflags`
 CFLAGS += -DWFM_DEBUG=$(PS5_DEBUG)
-# The live-discovery evidence API is shared by the fullscreen adapter and HBC parser.
-CFLAGS += -DFULLSCREEN_LIVE_PLAN=1
+# Fullscreen release flags: fast native anchors only; live plan & safe scan omitted.
+CFLAGS += -DFULLSCREEN_LIVE_PLAN=0
 CFLAGS += -Ivendor/libsmb2/include
 CFLAGS += -Ivendor/curl/include -Ivendor/yxml -DCURL_STATICLIB
 LDFLAGS := -Wl,--gc-sections
