@@ -49,6 +49,7 @@ static pthread_mutex_t registry_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_once_t curl_once = PTHREAD_ONCE_INIT;
 static int curl_init_error;
 static struct curl_slist ftp_utf8 = {(char *)"*OPTS UTF8 ON",NULL};
+static struct curl_slist ftp_space = {(char *)"*SITE DF",NULL};
 static _Thread_local char last_error[CURL_ERROR_SIZE];
 static _Thread_local CURLcode last_curl_error;
 
@@ -89,8 +90,10 @@ static char *encode_path(const char *raw) {
   return encoded;
 }
 int net_join(char *out,size_t size,const char *dir,const char *name) {
-  char *encoded=curl_easy_escape(NULL,name,0);
+  char *encoded=encode_path(name);
   if(!encoded) { errno=ENOMEM; return -1; }
+  size_t end=strlen(encoded);
+  if(end && encoded[end-1]=='/')encoded[end-1]=0;
   int length=snprintf(out,size,"%s%s%s",dir,dir[strlen(dir)-1]=='/'?"":"/",encoded);
   curl_free(encoded);
   if(length<0 || (size_t)length>=size) { errno=ENAMETOOLONG; return -1; }
@@ -102,8 +105,8 @@ int net_parse_address(const char *input, smb_address_t *a) {
   int result=-1;
   memset(a,0,sizeof(*a));
   pthread_once(&curl_once,init_curl);
-  if(curl_init_error || !net_path(input) || !clean_component(input) ||
-     transport_url(input,transport,sizeof(transport))) { errno=EINVAL; return -1; }
+  if(curl_init_error || !net_path(input) || !clean_component(input)) { errno=EINVAL; return -1; }
+  if(transport_url(input,transport,sizeof(transport)))return -1;
   const char *authority=strstr(transport,"://")+3, *path=strchr(authority,'/');
   size_t base=path?(size_t)(path-transport):strlen(transport);
   if(base>=sizeof(transport)) { errno=ENAMETOOLONG; return -1; }
@@ -118,7 +121,7 @@ int net_parse_address(const char *input, smb_address_t *a) {
      (password && copy_text(a->password,sizeof(a->password),password)))goto done;
   if(!clean_text(a->user) || !clean_text(a->password)) { errno=EINVAL; goto done; }
   for(char *p=host;*p;p++)*p=(char)tolower((unsigned char)*p);
-  (void)curl_url_get(url,CURLUPART_PORT,&port,0);
+  (void)curl_url_get(url,CURLUPART_PORT,&port,CURLU_NO_DEFAULT_PORT);
   if(snprintf(a->server,sizeof(a->server),"%s%s%s",host,port?":":"",port?port:"") >= (int)sizeof(a->server)) { errno=ENAMETOOLONG; goto done; }
   const char *raw=strchr(strstr(input,"://")+3,'/');
   int length=0;
@@ -433,14 +436,36 @@ static long ftp_entry(const void *info,void *opaque,int remains) {
   }
   return add_entry(dir,file->filename,&st)?CURL_CHUNK_BGN_FUNC_FAIL:CURL_CHUNK_BGN_FUNC_SKIP;
 }
+typedef struct ftp_reply { long code; struct statvfs *space; } ftp_reply_t;
 static size_t ftp_reply(char *data,size_t size,size_t count,void *opaque) {
+  ftp_reply_t *reply=opaque;
   size*=count;
   if(size>=4 && isdigit((unsigned char)data[0]) && isdigit((unsigned char)data[1]) &&
      isdigit((unsigned char)data[2]) && data[3]==' ')
-    *(long *)opaque=(data[0]-'0')*100+(data[1]-'0')*10+data[2]-'0';
+    reply->code=(data[0]-'0')*100+(data[1]-'0')*10+data[2]-'0';
+  /* Optional SITE DF extension: byte counts, never infer units from prose. */
+  char line[128];
+  if(reply->space && size>10 && size<sizeof(line) && !memcmp(data,"213 total=",10)) {
+    memcpy(line,data,size); line[size]=0;
+    int saved_errno=errno; errno=0;
+    char *end,*start=line+10;
+    unsigned long long total=strtoull(start,&end,10);
+    if(isdigit((unsigned char)*start) && end>start && !strncmp(end,";free=",6)) {
+      start=end+6;
+      unsigned long long available=strtoull(start,&end,10);
+      if(!errno && isdigit((unsigned char)*start) && end>start && !strcmp(end,";\r\n") && available<=total &&
+         (unsigned long long)(fsblkcnt_t)total==total) {
+        memset(reply->space,0,sizeof(*reply->space));
+        reply->space->f_bsize=reply->space->f_frsize=1;
+        reply->space->f_blocks=total;
+        reply->space->f_bavail=reply->space->f_bfree=available;
+      }
+    }
+    errno=saved_errno;
+  }
   return size;
 }
-static int ftp_list(net_dir_t *dir,const smb_address_t *auth) {
+static int ftp_list(net_dir_t *dir,const smb_address_t *auth,struct statvfs *space) {
   CURL *curl=request_new(dir->path,auth,1); if(!curl)return -1;
   char *url=NULL; curl_easy_getinfo(curl,CURLINFO_EFFECTIVE_URL,&url);
   char wildcard[PATH_MAX*3];
@@ -450,23 +475,25 @@ static int ftp_list(net_dir_t *dir,const smb_address_t *auth) {
   curl_easy_setopt(curl,CURLOPT_CHUNK_BGN_FUNCTION,ftp_entry);
   curl_easy_setopt(curl,CURLOPT_CHUNK_DATA,dir);
   curl_easy_setopt(curl,CURLOPT_CUSTOMREQUEST,"LIST -a");
-  long code=0;
+  ftp_reply_t reply={.space=space};
+  if(space)curl_easy_setopt(curl,CURLOPT_PREQUOTE,&ftp_space);
   curl_easy_setopt(curl,CURLOPT_HEADERFUNCTION,ftp_reply);
-  curl_easy_setopt(curl,CURLOPT_HEADERDATA,&code);
+  curl_easy_setopt(curl,CURLOPT_HEADERDATA,&reply);
   int result=perform(curl,1);
-  if(result && code>=500 && code<=504) {
+  if(result && reply.code>=500 && reply.code<=504) {
     curl_easy_setopt(curl,CURLOPT_CUSTOMREQUEST,"LIST");
     dir->count=0; result=perform(curl,1);
   }
-  if(result && !dir->count && last_curl_error==CURLE_REMOTE_FILE_NOT_FOUND && (code==226 || code==250))result=0;
+  if(result && !dir->count && last_curl_error==CURLE_REMOTE_FILE_NOT_FOUND && (reply.code==226 || reply.code==250))result=0;
   if(!result) { directory_stat(&dir->self,dir->path); dir->found=1; }
   int error=errno; curl_easy_cleanup(curl); errno=error; return result;
 }
 static int fetch_directory(net_dir_t *dir,const smb_address_t *auth,int depth,struct statvfs *space) {
-  return ftp_path(dir->path)?ftp_list(dir,auth):dav_list(dir,auth,depth,space);
+  return ftp_path(dir->path)?ftp_list(dir,auth,space):dav_list(dir,auth,depth,space);
 }
 int net_probe(const smb_address_t *auth,struct statvfs *space) {
-  net_dir_t dir={0}; strcpy(dir.path,auth->path);
+  net_dir_t dir={0};
+  if(copy_text(dir.path,sizeof(dir.path),auth->path))return -1;
   memset(space,0,sizeof(*space));
   int result=fetch_directory(&dir,auth,0,space);
   if(!result && !S_ISDIR(dir.self.st_mode)) { errno=ENOTDIR; result=-1; }
@@ -498,6 +525,8 @@ void net_closedir(net_dir_t *dir) {
 }
 int net_stat(const char *path,struct stat *st) {
   char parent[PATH_MAX];
+  net_dir_t dir={0};
+  if(copy_text(dir.path,sizeof(dir.path),path))return -1;
   if(path_dirname(path,parent,sizeof(parent))) { errno=ENAMETOOLONG; return -1; }
   pthread_mutex_lock(&registry_lock);
   for(net_dir_t *dir=directories;dir;dir=dir->next) {
@@ -516,19 +545,18 @@ int net_stat(const char *path,struct stat *st) {
   pthread_mutex_unlock(&registry_lock);
   smb_address_t auth;
   if(storage_remote_address(path,&auth))return -1;
-  net_dir_t dir={0};
   if(!ftp_path(path)) {
-    strcpy(dir.path,path); int result=dav_list(&dir,&auth,0,NULL);
+    int result=dav_list(&dir,&auth,0,NULL);
     if(!result)*st=dir.self;
     free(dir.items); return result;
   }
   if(!strcmp(auth.path,path)) {
-    strcpy(dir.path,path); int result=ftp_list(&dir,&auth);
+    int result=ftp_list(&dir,&auth,NULL);
     if(!result)*st=dir.self;
     free(dir.items); return result;
   }
-  strcpy(dir.path,parent);
-  int result=ftp_list(&dir,&auth);
+  if(copy_text(dir.path,sizeof(dir.path),parent))return -1;
+  int result=ftp_list(&dir,&auth,NULL);
   if(!result) {
     result=-1; errno=ENOENT;
     for(size_t i=0;i<dir.count;i++) {
@@ -539,10 +567,11 @@ int net_stat(const char *path,struct stat *st) {
   int error=errno; free(dir.items); errno=error; return result;
 }
 int net_statvfs(const char *path,struct statvfs *st) {
-  if(ftp_path(path)) { errno=ENOTSUP; return -1; }
+  net_dir_t dir={0};
+  if(copy_text(dir.path,sizeof(dir.path),path))return -1;
   smb_address_t auth; if(storage_remote_address(path,&auth))return -1;
-  net_dir_t dir={0}; strcpy(dir.path,path); memset(st,0,sizeof(*st));
-  int result=dav_list(&dir,&auth,0,st); free(dir.items);
+  memset(st,0,sizeof(*st));
+  int result=fetch_directory(&dir,&auth,0,st); free(dir.items);
   if(!result && !st->f_frsize) { errno=ENOTSUP; return -1; }
   return result;
 }

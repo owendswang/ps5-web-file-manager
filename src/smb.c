@@ -122,6 +122,10 @@ int smb_parse_address(const char *input, smb_address_t *a) {
     if(isspace((unsigned char)*p) || *p == '@' || *p == '?' || *p == '#') goto invalid;
     *p = (char)tolower((unsigned char)*p);
   }
+  char *port = strrchr(a->server, ':');
+  if(port && port[1] && strspn(port + 1, "0123456789") == strlen(port + 1) &&
+     strtoul(port + 1, NULL, 10) == 445) *port = 0;
+  if(!a->server[0]) goto invalid;
   share = slash + 1;
   end = strchr(share, '/');
   if(!end) end = share + strlen(share);
@@ -154,7 +158,7 @@ static void trim_local_path(char *path) {
 }
 
 static int builtin_local_path(const char *path) {
-  return !strcmp(path, "/data") ||
+  return !strcmp(path, "/") || !strcmp(path, "/data") ||
     (!strncmp(path, "/mnt/", 5) && path[5] && !strchr(path + 5, '/'));
 }
 
@@ -187,7 +191,7 @@ static void load_config_file(const char *name, int kind, int *migrate) {
        !strncmp(fields[0],"webdavs://",10) || !strncmp(fields[0],"davs://",7) ||
        !strncmp(fields[0],"https://",8))) continue;
     int local = fields[0][0] == '/';
-    if(p) *migrate |= CONFIG_MIGRATE_SMB; /* Discard passwords from the old four-column format. */
+    if(p) *migrate |= 1 << kind; /* Discard passwords from the old four-column format. */
     /* Split local paths saved by the interim mixed format. */
     if(local && kind==0) *migrate |= CONFIG_MIGRATE_SMB | CONFIG_MIGRATE_CUSTOM;
     smb_address_t a;
@@ -198,11 +202,11 @@ static void load_config_file(const char *name, int kind, int *migrate) {
                    copy_field(a.domain, sizeof(a.domain), fields[2], strlen(fields[2]))))) {
       config_error = EINVAL; break;
     }
-    if(local && strcmp(fields[0], a.path)) *migrate |= CONFIG_MIGRATE_CUSTOM;
+    if(strcmp(fields[0], a.path)) *migrate |= 1 << config_kind(a.path);
     if(local && builtin_local_path(a.path)) { *migrate |= CONFIG_MIGRATE_CUSTOM; continue; }
     memset(a.password, 0, sizeof(a.password));
     if(connection_index(a.path) < connection_count) {
-      if(local) *migrate |= CONFIG_MIGRATE_CUSTOM;
+      *migrate |= 1 << config_kind(a.path);
       continue;
     }
     if(connection_count == SMB_CONNECTION_MAX) { config_error = EINVAL; break; }
@@ -222,6 +226,8 @@ static void load_config(void) {
   /* Write migrated local paths first; leave smb.conf intact if that fails. */
   if(!config_error && (migrate & CONFIG_MIGRATE_CUSTOM) && save_config(1)) config_error = errno;
   if(!config_error && (migrate & CONFIG_MIGRATE_SMB) && save_config(0)) config_error = errno;
+  for(int kind = 2; !config_error && kind <= 3; kind++)
+    if((migrate & (1 << kind)) && save_config(kind)) config_error = errno;
 }
 
 static int ensure_config_dir(void) {
@@ -412,6 +418,7 @@ static const char *smb_error_code(int error, uint32_t status, const char *detail
 
 enum MHD_Result api_smb_shares(struct MHD_Connection *conn, const char *body, size_t size) {
   char *input = body_form_value(body, size, "address");
+  trim_whitespace(input);
   char *password = body_form_value(body, size, "password");
   char ipc[PATH_MAX];
   smb_address_t a;
@@ -488,11 +495,12 @@ static void local_space(saved_smb_t *saved) {
 
 enum MHD_Result api_smb_add(struct MHD_Connection *conn, const char *body, size_t size, int connecting) {
   char *input = body_form_value(body, size, "address");
+  trim_whitespace(input);
   if(connecting) input = fs_path_value(input);
   char *password = body_form_value(body, size, "password");
   smb_address_t a = {0};
   int local = !connecting && input && input[0] == '/';
-  int invalid;
+  int invalid, duplicate = 0;
   if(!input) { errno = EINVAL; invalid = 1; }
   else if(local) {
     invalid = !realpath(input, a.path);
@@ -504,13 +512,7 @@ enum MHD_Result api_smb_add(struct MHD_Connection *conn, const char *body, size_
     return send_json_error_detail(conn, MHD_HTTP_BAD_REQUEST, strerror(error), path_error_code(error), strerror(error));
   }
   free(input);
-  if(local) {
-    trim_local_path(a.path);
-    if(builtin_local_path(a.path)) {
-      free(password);
-      return send_json_error_detail(conn, MHD_HTTP_BAD_REQUEST, "path reserved for built-in storage", "storage_path_builtin", NULL);
-    }
-  }
+  if(local) trim_local_path(a.path);
   pthread_once(&config_once, load_config);
   if(connecting) {
     pthread_mutex_lock(&config_mutex);
@@ -537,6 +539,7 @@ enum MHD_Result api_smb_add(struct MHD_Connection *conn, const char *body, size_
       return send_json_error_detail(conn, MHD_HTTP_BAD_REQUEST, strerror(error), path_error_code(error), strerror(error));
     }
     closedir(dir);
+    if(builtin_local_path(a.path)) { duplicate = 1; goto respond; }
     local_space(&added);
   } else if(net_path(a.path)) {
     struct statvfs space;
@@ -584,7 +587,7 @@ enum MHD_Result api_smb_add(struct MHD_Connection *conn, const char *body, size_
   }
   pthread_mutex_lock(&config_mutex);
   size_t index = connection_index(a.path);
-  int duplicate = !connecting && index < connection_count;
+  duplicate = !connecting && index < connection_count;
   if(connecting && (index == connection_count ||
       strcmp(connections[index].address.user, a.user) || strcmp(connections[index].address.domain, a.domain))) {
     pthread_mutex_unlock(&config_mutex);
@@ -602,6 +605,7 @@ enum MHD_Result api_smb_add(struct MHD_Connection *conn, const char *body, size_
   if(result) { connections[index] = old; connection_count = old_count; }
   pthread_mutex_unlock(&config_mutex);
   if(result) return send_json_error_detail(conn, MHD_HTTP_INTERNAL_SERVER_ERROR, "could not save storage configuration", "storage_config_save_failed", strerror(errno));
+respond: {
   strbuf_t json = {0};
   strbuf_append(&json, "{\"ok\":true,\"path\":");
   json_escape(&json, a.path);
@@ -610,14 +614,26 @@ enum MHD_Result api_smb_add(struct MHD_Connection *conn, const char *body, size_
   strbuf_append(&json, duplicate ? ",\"duplicate\":true}" : "}");
   return send_buffer(conn, MHD_HTTP_OK, json.data, "application/json");
 }
+}
 
 enum MHD_Result api_smb_remove(struct MHD_Connection *conn, const char *body, size_t size) {
   char *path = fs_path_value(body_form_value(body, size, "path"));
+  trim_whitespace(path);
   if(!path || (!remote_path(path) && path[0] != '/') || strlen(path) >= PATH_MAX) {
     free(path);
     return send_json_error(conn, MHD_HTTP_BAD_REQUEST, "invalid saved path");
   }
   if(path[0] == '/') trim_local_path(path);
+  else {
+    smb_address_t a;
+    if(parse_saved_address(path, &a)) {
+      free(path);
+      return send_json_error(conn, MHD_HTTP_BAD_REQUEST, "invalid saved path");
+    }
+    free(path);
+    path = strdup(a.path);
+    if(!path) return send_json_error(conn, MHD_HTTP_INTERNAL_SERVER_ERROR, "out of memory");
+  }
   if(has_active_task()) {
     free(path);
     return send_json_error(conn, MHD_HTTP_CONFLICT, "another task is running");

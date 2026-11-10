@@ -5,6 +5,7 @@
 
 #include <microhttpd.h>
 
+void trim_whitespace(char *text);
 char *query_value(struct MHD_Connection *conn, const char *key);
 char *header_value(struct MHD_Connection *conn, const char *key);
 char *request_value(struct MHD_Connection *conn, const char *header,

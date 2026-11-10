@@ -11,11 +11,11 @@ PS5 web file manager payload. It runs an HTTP UI starting at port `8888`, regist
 
 <p>
   <a href="docs/screenshots/20260617_231827.376.jpg" target="_blank"><img src="docs/screenshots/20260617_231827.376.jpg" width="31%" alt="PS5 Web File Manager screenshot 1"></a>
-  <a href="docs/screenshots/20260619_131432.399.jpg" target="_blank"><img src="docs/screenshots/20260619_131432.399.jpg" width="31%" alt="PS5 Web File Manager screenshot 2"></a>
-  <a href="docs/screenshots/20260617_232348.855.jpg" target="_blank"><img src="docs/screenshots/20260617_232348.855.jpg" width="31%" alt="PS5 Web File Manager screenshot 3"></a>
-  <a href="docs/screenshots/20260619_131811.644.jpg" target="_blank"><img src="docs/screenshots/20260619_131811.644.jpg" width="31%" alt="PS5 Web File Manager screenshot 4"></a>
+  <a href="docs/screenshots/20260617_232348.855.jpg" target="_blank"><img src="docs/screenshots/20260617_232348.855.jpg" width="31%" alt="PS5 Web File Manager screenshot 2"></a>
+  <a href="docs/screenshots/20261110_211425.621.jpg" target="_blank"><img src="docs/screenshots/20261110_211425.621.jpg" width="31%" alt="PS5 Web File Manager screenshot 3"></a>
+  <a href="docs/screenshots/20261110_211721.406.jpg" target="_blank"><img src="docs/screenshots/20261110_211721.406.jpg" width="31%" alt="PS5 Web File Manager screenshot 4"></a>
   <a href="docs/screenshots/20260619_131535.239.jpg" target="_blank"><img src="docs/screenshots/20260619_131535.239.jpg" width="31%" alt="PS5 Web File Manager screenshot 5"></a>
-  <a href="docs/screenshots/20260620_232728.533.jpg" target="_blank"><img src="docs/screenshots/20260620_232728.533.jpg" width="31%" alt="PS5 Web File Manager screenshot 6"></a>
+  <a href="docs/screenshots/20261110_211551.538.jpg" target="_blank"><img src="docs/screenshots/20261110_211551.538.jpg" width="31%" alt="PS5 Web File Manager screenshot 6"></a>
 </p>
 
 ## Features
@@ -26,7 +26,7 @@ PS5 web file manager payload. It runs an HTTP UI starting at port `8888`, regist
 - Copy, move, delete, rename, create files, and create folders.
 - Edit UTF-8 text files up to 1 MiB using the built-in plain text editor.
 - Multi-select operations.
-- Browse SMB, FTP and WebDAV servers through **Manage Paths**, alongside local folder shortcuts. For example: `ftp://user@server:21/folder` or `webdav://server:8080/folder`. `dav://` and `http://` URLs are also accepted for WebDAV.
+- Browse SMB, FTP and WebDAV servers through **Manage Paths**, alongside local folder shortcuts.
 - Copy/move by choosing sources first, then pasting or moving them into the current folder.
 - Conflict prompts for overwriting files and merging folders.
 - Extract archive files ending with `.7z`, `.001`, `.zip`, `.zipx`, `.rar`, `.part01.rar`, `.arj`, `.bz2`, `.bzip2`, `.tbz`, `.tbz2`, `.cab`, `.gz`, `.gzip`, `.tgz`, `.tpz`, `.lzh`, `.lha`, `.tar`, `.xz`, `.txz`, `.z`, `.taz`, `.zst`, `.tzst`, `.xar`, `.xip`, `.cpio`, `.lzma`, `.pmd`. Extraction requires the separately distributed [`wfm-7zip-helper.elf` helper](https://github.com/owendswang/wfm-7zip-helper) at `/data/wfm/wfm-7zip-helper.elf`.
@@ -55,7 +55,7 @@ export PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk
 
 Initialize the pinned dependencies with `git submodule update --init --recursive`.
 
-This project uses `libmicrohttpd` for HTTP, `libsmb2` for SMB, `libcurl` for FTP/WebDAV, and `yxml` for WebDAV XML. CMake builds the pinned client libraries automatically, without TLS. `make` checks for `libmicrohttpd` before building and runs the installer script automatically if it is missing:
+`make` checks for `libmicrohttpd` before building and runs the installer script automatically if it is missing:
 
 ```sh
 make
@@ -108,6 +108,23 @@ http://${PS5_IP_ADDRESS}:8888/
 
 On startup the payload registers a `PS5 Web File Manager` web shortcut in the Media category. Missing launcher files are written; existing icons and names are preserved. Only the loopback URL in `param.json` is updated to the actual listen port, including fallback ports such as `8889`.
 
+### Remote paths
+
+In **Manage Paths → Add Path**, enter a directory URL:
+
+| Protocol | Without credentials | With credentials |
+| --- | --- | --- |
+| SMB | `smb://server/share/folder` | `smb://user:password@server/share/folder` |
+| FTP | `ftp://server/folder` | `ftp://user:password@server/folder` |
+| WebDAV | `webdav://server:8080/folder` | `webdav://user:password@server:8080/folder` |
+
+- Replace `server` with an IP address or hostname. Use `/` separators and specify `:port` when needed.
+- WebDAV also accepts `http://` and `dav://`. FTPS and HTTPS/TLS are not supported.
+- Without credentials requires guest/anonymous access. Use `user@server` to enter the password separately.
+- Paths and accounts are saved on the PS5; passwords are saved only in the browser's local storage and removed when the corresponding path is removed from that browser.
+- SMB paths include a share name; `smb://server/` can list shares if the server allows it.
+- Percent-encode special characters in usernames/passwords: `@` → `%40`, `:` → `%3A`, `%` → `%25`.
+
 ## Notes
 
 - Copy, move, delete, upload, and download run as single background tasks. While one task is running, other file operations are rejected.
@@ -118,10 +135,6 @@ On startup the payload registers a `PS5 Web File Manager` web shortcut in the Me
 - The UI can recover the active task display if the browser is closed and reopened while the payload process is still running.
 - Text editing is limited to common text-file extensions. Non-UTF-8 and oversized files are rejected.
 - File names are transmitted as UTF-8 through the web API. The payload also attempts to preserve legacy byte-oriented names returned by mounted filesystems so mixed USB filename encodings can still be displayed and operated on.
-- Remote paths and usernames are shared through `/data/wfm/config/smb.conf`, `ftp.conf` and `webdav.conf`; local shortcuts remain in `custom.conf`. Passwords are saved only in the current browser and requested when needed.
-- FTP paths start at the account's login folder; use `ftp://server//absolute/path` to start at the server's filesystem root instead.
-- FTP/WebDAV servers must allow directory listing; remote reads, including PKG streaming, require FTP restart or HTTP byte-range support. Capacity is shown only when the server provides it. Archive extraction and Unix permission changes require local storage.
-- WebDAV supports Basic and Digest authentication. FTPS, HTTPS and HTTP NTLM authentication are not included in this compact build.
 
 ## FAQ
 - The optional fullscreen button patches browser layout in RAM; it does not replace system files.
@@ -138,8 +151,9 @@ This project was built with reference to these projects:
 - **[seregonwar/zftpd](https://github.com/seregonwar/zftpd):** PS5 TCP socket buffer tuning and high-throughput transfer behavior reference. License: MIT.
 - **[itsPLK/ps5-payload-manager](https://github.com/itsPLK/ps5-payload-manager):** Payload building behavior and native browser launch reference. License: GPLv3.
 - **[owendswang/ps5-web-browser-fullscreen](https://github.com/owendswang/ps5-web-browser-fullscreen):** Browser fullscreen/restore implementation. License: GPLv3+.
+- **[Hermes](https://github.com/facebook/hermes):** Generated bytecode opcode metadata used by the fullscreen dependency. Copyright Meta Platforms, Inc. and affiliates. License: MIT.
 - **[libmicrohttpd](https://ftp.gnu.org/gnu/libmicrohttpd/):** Used as the embedded HTTP server library. It is licensed by GNU under the LGPL; this payload links it as the SDK-provided static library.
-- **[libsmb2](https://github.com/sahlberg/libsmb2):** SMB2/3 client library. License: LGPLv2.1.
+- **[libsmb2](https://github.com/sahlberg/libsmb2):** SMB2/3 client library. License: LGPLv2.1 or later.
 - **[curl / libcurl](https://github.com/curl/curl):** FTP and HTTP WebDAV transport, including FTP directory parsing. License: curl license; see `vendor/curl/COPYING`.
 - **[yxml](https://dev.yorhel.nl/yxml):** Small streaming XML parser used for WebDAV responses. License: MIT; see `vendor/yxml/COPYING`.
 - **[ps5-payload-dev/sdk](https://github.com/ps5-payload-dev/sdk):** Payload building foundation. License: GPLv3+.
@@ -152,12 +166,12 @@ The project is distributed under GPLv3 or later, matching the GPLv3+ projects us
 
 Third-party projects retain their own licenses. Do not copy assets or source from the credited projects into another distribution without preserving the corresponding license notices.
 
-The curl and yxml submodules retain their original copyright and license notices, also reproduced below for binary distributions.
+The curl, yxml and Hermes-derived metadata retain their original copyright and license notices, also reproduced below for binary distributions.
 
 If distributing binaries, comply with the LGPL terms for libmicrohttpd and libsmb2 in addition to this project's GPL license.
 
 <details>
-<summary>curl and yxml copyright and permission notices</summary>
+<summary>curl, yxml and Hermes copyright and permission notices</summary>
 
 ### curl / libcurl
 
@@ -206,5 +220,29 @@ IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
 CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
 TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+### Hermes opcode metadata
+
+MIT License
+
+Copyright (c) Meta Platforms, Inc. and affiliates.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 </details>

@@ -39,9 +39,10 @@ let uploadTerminalAbort = false;
 let L = {};
 
 const APP_VERSION = "v1.14";
-const SMB_PASSWORD_KEY = "ps5-web-file-mgr:smb-password:";
-const smbPasswords = {};
-const smbReady = {};
+// Keep the existing storage prefix so saved passwords remain readable.
+const REMOTE_PASSWORD_KEY = "ps5-web-file-mgr:smb-password:";
+const remotePasswords = {};
+const remoteReady = {};
 
 const LAST_PATH_KEY = "ps5-web-file-mgr:last-path";
 const SORT_KEY = "ps5-web-file-mgr:list-sort";
@@ -76,7 +77,7 @@ const smbSharePickerEl = document.getElementById("smbSharePicker");
 const smbShareSelectEl = document.getElementById("smbShareSelect");
 const smbManagerActionsEl = document.getElementById("smbManagerActions");
 let smbShareChoice = null;
-let smbConnections = [];
+let remoteConnections = [];
 let storagePaths = [];
 const statusEl = document.getElementById("statusText");
 const versionEl = document.getElementById("versionText");
@@ -271,12 +272,12 @@ async function request(path, params, options) {
   const qs = new URLSearchParams(params || {});
   const fetchOptions = Object.assign({ method: "POST" }, options || {});
   if (path.indexOf("/api/smb/") !== 0 && path.indexOf("/api/storage/") !== 0 && path !== "/api/space") {
-    await ensureSmbPaths(params);
+    await ensureRemotePaths(params);
     if (fetchOptions.body && fetchOptions.headers &&
         fetchOptions.headers["Content-Type"] === "application/x-www-form-urlencoded") {
       const values = {};
       new URLSearchParams(fetchOptions.body).forEach((value, key) => { values[key] = value; });
-      await ensureSmbPaths(values);
+      await ensureRemotePaths(values);
     }
   }
   const response = await fetch(path + (qs.toString() ? "?" + qs.toString() : ""), fetchOptions).catch(error => {
@@ -290,7 +291,7 @@ async function request(path, params, options) {
     error.detail = data.error_arg;
     // Recheck browser credentials on the next operation after a backend restart/error.
     if (path.indexOf("/api/smb/") !== 0 && path.indexOf("/api/storage/") !== 0 && path !== "/api/space") {
-      for (const root of Object.keys(smbReady)) delete smbReady[root];
+      for (const root of Object.keys(remoteReady)) delete remoteReady[root];
     }
     throw error;
   }
@@ -670,7 +671,7 @@ function showActionFailed(label, error) {
 
 function readSavedPath() {
   try {
-    return localStorage.getItem(LAST_PATH_KEY) || "/";
+    return browsePath(localStorage.getItem(LAST_PATH_KEY)) || "/";
   } catch (err) {
     return "/";
   }
@@ -696,7 +697,7 @@ function historyPath() {
   if (hash.length <= 1) return "";
   try {
     const path = decodeURIComponent(hash.slice(1));
-    return path.charAt(0) === "/" || isRemotePath(path) ? path : "";
+    return browsePath(path);
   } catch (err) {
     return "";
   }
@@ -808,7 +809,6 @@ function fitSpaceOptions() {
     parseFloat(style.paddingRight) - 20;
   const selected = select.options[select.selectedIndex];
   let text = selected ? selected.textContent : "";
-  select.style.height = "";
   if (selected && selected.spaceName !== undefined) {
     const name = Array.from(selected.spaceName);
     if (context.measureText(text).width > width) {
@@ -819,12 +819,6 @@ function fitSpaceOptions() {
     }
   }
   spaceInfoEl.querySelector(".space-value").textContent = text;
-  if (selected && text !== selected.textContent) {
-    const fullText = selected.textContent;
-    selected.textContent = text;
-    select.style.height = select.getBoundingClientRect().height + "px";
-    selected.textContent = fullText;
-  }
   select.title = selected ? selected.title : "";
 }
 
@@ -832,13 +826,13 @@ async function refreshSpaces() {
   try {
     const data = await api("/api/space", { path: cwd });
     const spaces = data.spaces || [];
-    const previousConnections = smbConnections;
+    const previousConnections = remoteConnections;
     storagePaths = spaces.filter(item => item.custom || isRemotePath(item.path));
-    smbConnections = storagePaths.filter(item => isRemotePath(item.path));
+    remoteConnections = storagePaths.filter(item => isRemotePath(item.path));
     for (const previous of previousConnections) {
-      const next = smbConnections.find(item => item.path === previous.path);
-      if (!next) forgetSmbPassword(previous.path);
-      else if (next.user !== previous.user || next.domain !== previous.domain) delete smbReady[previous.path];
+      const next = remoteConnections.find(item => item.path === previous.path);
+      if (!next) forgetRemotePassword(previous.path);
+      else if (next.user !== previous.user || next.domain !== previous.domain) delete remoteReady[previous.path];
     }
     if (!smbManagerOverlayEl.hidden && !localActionBusy) renderSmbConnections();
     updateSpecialStoragePaths(spaces);
@@ -902,8 +896,8 @@ async function refreshSpaces() {
       fitSpaceOptions();
     }
     renderAddressPath();
-    if (!spaceNavigationLocked() && previousConnections.some(item => smbContainsPath(item.path, cwd)) &&
-        !smbConnections.some(item => smbContainsPath(item.path, cwd))) {
+    if (!spaceNavigationLocked() && previousConnections.some(item => remoteContainsPath(item.path, cwd)) &&
+        !remoteConnections.some(item => remoteContainsPath(item.path, cwd))) {
       await load("/", undefined, true, true, "replace");
     }
   } catch (err) {
@@ -915,30 +909,53 @@ function spaceNavigationLocked() {
   return backgroundInteractionLocked() || !contentLoadingEl.hidden;
 }
 
-function readSmbPassword(item) {
-  let value = smbPasswords[item.path];
-  if (!value) {
-    try { value = JSON.parse(localStorage.getItem(SMB_PASSWORD_KEY + item.path)); } catch (err) {}
+function remotePasswordPaths(path) {
+  const paths = [path].concat(Object.keys(remotePasswords));
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.indexOf(REMOTE_PASSWORD_KEY) === 0) paths.push(key.slice(REMOTE_PASSWORD_KEY.length));
+    }
+  } catch (err) {}
+  const canonical = normalizeRemotePath(path);
+  return paths.filter((value, index) => paths.indexOf(value) === index && normalizeRemotePath(value) === canonical);
+}
+
+function readRemotePassword(item) {
+  for (const path of remotePasswordPaths(item.path)) {
+    let value = remotePasswords[path];
+    if (!value) {
+      try { value = JSON.parse(localStorage.getItem(REMOTE_PASSWORD_KEY + path)); } catch (err) {}
+    }
+    if (value && value.user === item.user && value.domain === item.domain && typeof value.password === "string") {
+      if (path !== item.path) {
+        saveRemotePassword(item, value.password);
+        delete remotePasswords[path];
+        try { localStorage.removeItem(REMOTE_PASSWORD_KEY + path); } catch (err) {}
+      }
+      return value.password;
+    }
   }
-  return value && value.user === item.user && value.domain === item.domain &&
-    typeof value.password === "string" ? value.password : null;
+  return null;
 }
 
-function saveSmbPassword(item, password) {
+function saveRemotePassword(item, password) {
   const value = { user: item.user, domain: item.domain, password: password };
-  smbPasswords[item.path] = value;
-  try { localStorage.setItem(SMB_PASSWORD_KEY + item.path, JSON.stringify(value)); } catch (err) {}
+  remotePasswords[item.path] = value;
+  try { localStorage.setItem(REMOTE_PASSWORD_KEY + item.path, JSON.stringify(value)); } catch (err) {}
 }
 
-function forgetSmbPassword(path) {
-  delete smbPasswords[path];
-  delete smbReady[path];
-  try { localStorage.removeItem(SMB_PASSWORD_KEY + path); } catch (err) {}
+function forgetRemotePassword(path) {
+  for (const saved of remotePasswordPaths(path)) {
+    delete remotePasswords[saved];
+    delete remoteReady[saved];
+    try { localStorage.removeItem(REMOTE_PASSWORD_KEY + saved); } catch (err) {}
+  }
 }
 
-function askSmbPassword(path) {
+function askRemotePassword(path) {
   const password = prompt(t("smbPasswordPrompt", { path: displayPath(path) }), "");
-  if (typeof password !== "string") {
+  if (typeof password !== "string" || !password.length) {
     const error = new Error(t("smbPasswordCanceled"));
     error.code = "smb_password_canceled";
     throw error;
@@ -946,48 +963,48 @@ function askSmbPassword(path) {
   return password;
 }
 
-async function unlockSmb(item) {
-  let password = readSmbPassword(item);
+async function unlockRemote(item) {
+  let password = readRemotePassword(item);
   const guest = /^(guest|anonymous)$/i.test(item.user || "Guest");
-  if (password === null && !guest) password = askSmbPassword(item.path);
+  if (password === null && !guest) password = askRemotePassword(item.path);
   try {
     let data;
     try {
       data = await apiForm("/api/storage/connect", { address: item.path, password: password === null ? "" : password });
     } catch (err) {
       if (password !== null || (err.code !== "smb_password_required" && err.code !== "remote_password_required")) throw err;
-      password = askSmbPassword(item.path);
+      password = askRemotePassword(item.path);
       data = await apiForm("/api/storage/connect", { address: item.path, password: password });
     }
-    saveSmbPassword(data, password === null ? "" : password);
+    saveRemotePassword(data, password === null ? "" : password);
   } catch (err) {
-    forgetSmbPassword(item.path);
+    forgetRemotePassword(item.path);
     throw err;
   }
 }
 
-async function ensureSmbPaths(values) {
+async function ensureRemotePaths(values) {
   const paths = [];
   for (const key of Object.keys(values || {})) {
     const value = values[key];
     if (typeof value === "string") paths.push.apply(paths, value.split("\n").filter(isRemotePath));
   }
   if (!paths.length) return;
-  if (!smbConnections.length) {
+  if (!remoteConnections.length) {
     const data = await api("/api/space");
-    smbConnections = (data.spaces || []).filter(item => isRemotePath(item.path));
+    remoteConnections = (data.spaces || []).filter(item => isRemotePath(item.path));
   }
   for (const path of paths) {
-    const item = smbConnectionForPath(path);
+    const item = remoteConnectionForPath(path);
     if (!item) continue;
-    if (!smbReady[item.path]) smbReady[item.path] = unlockSmb(item);
-    try { await smbReady[item.path]; }
-    catch (err) { delete smbReady[item.path]; throw err; }
+    if (!remoteReady[item.path]) remoteReady[item.path] = unlockRemote(item);
+    try { await remoteReady[item.path]; }
+    catch (err) { delete remoteReady[item.path]; throw err; }
   }
 }
 
-function smbConnectionForPath(path) {
-  return smbConnections.filter(item => smbContainsPath(item.path, path))
+function remoteConnectionForPath(path) {
+  return remoteConnections.filter(item => remoteContainsPath(item.path, path))
     .sort((a, b) => b.path.length - a.path.length)[0];
 }
 
@@ -999,18 +1016,36 @@ function isRemotePath(path) {
   return /^(?:smb|ftp|webdav|dav|http):\/\//.test(path);
 }
 
+function normalizeRemotePath(path) {
+  return path.replace(/^(smb|ftp|webdav|dav|http):\/\/([^/]+)/, (match, scheme, authority) => {
+    const protocol = scheme === "http" || scheme === "dav" ? "webdav" : scheme;
+    const at = authority.lastIndexOf("@");
+    const server = authority.slice(at + 1).toLowerCase().replace(/:(\d+)$/, (suffix, port) =>
+      Number(port) === (protocol === "smb" ? 445 : protocol === "ftp" ? 21 : 80) ? "" : suffix);
+    return protocol + "://" + authority.slice(0, at + 1) + server;
+  });
+}
+
+function browsePath(path) {
+  if (typeof path !== "string") return "";
+  const canonical = normalizeRemotePath(path);
+  return canonical.charAt(0) === "/" || remoteRoot(canonical) ? canonical : "";
+}
+
 function remoteProtocol(path) {
   return isSmbPath(path) ? "SMB" : /^ftp:/.test(path) ? "FTP" : "WebDAV";
 }
 
 function remoteRoot(path) {
-  if (isSmbPath(path)) return path.match(/^smb:\/\/[^/]+\/[^/]+/)[0];
-  const roots = smbConnections.filter(item => smbContainsPath(item.path, path))
+  const match = /^(?:smb:\/\/[^/\s]+\/[^/]+|(?:ftp|webdav|dav|http):\/\/[^/\s]+)(?=\/|$)/.exec(path);
+  if (!match) return "";
+  if (isSmbPath(path)) return match[0];
+  const roots = remoteConnections.filter(item => remoteContainsPath(item.path, path))
     .sort((a, b) => a.path.length - b.path.length);
-  return roots.length ? roots[0].path : path.match(/^[a-z]+:\/\/[^/]+/)[0];
+  return roots.length ? roots[0].path : match[0];
 }
 
-function smbContainsPath(root, path) {
+function remoteContainsPath(root, path) {
   return path === root || path.indexOf(root + "/") === 0;
 }
 
@@ -1081,8 +1116,8 @@ async function removeSmbConnection(path) {
     setBusy(true);
     await apiForm("/api/storage/remove", { path: path });
     if (isRemotePath(path)) {
-      forgetSmbPassword(path);
-      if (smbContainsPath(path, cwd)) await load("/", undefined, true, true, "replace");
+      forgetRemotePassword(path);
+      if (remoteContainsPath(path, cwd)) await load("/", undefined, true, true, "replace");
     }
     await refreshSpaces();
   } catch (err) {
@@ -1125,8 +1160,8 @@ async function saveStoragePath(address, password) {
   const data = await apiForm("/api/storage/add", { address: address, password: password });
   if (data.duplicate) alert(t("storagePathExists"));
   if (isRemotePath(data.path)) {
-    saveSmbPassword(data, password);
-    smbReady[data.path] = Promise.resolve();
+    saveRemotePassword(data, password);
+    remoteReady[data.path] = Promise.resolve();
   }
   await refreshSpaces();
   return data;
@@ -1142,13 +1177,13 @@ async function actionFavorite(item) {
     let address = isSmbPath(item.path) || !isRemotePath(item.path) ? displayPath(item.path) : item.path;
     let password = "";
     if (isRemotePath(item.path)) {
-      await ensureSmbPaths({ path: item.path });
-      const connection = smbConnectionForPath(item.path);
+      await ensureRemotePaths({ path: item.path });
+      const connection = remoteConnectionForPath(item.path);
       if (connection) {
         const user = (connection.domain ? encodeURIComponent(decodeFsText(connection.domain)) + ";" : "") +
           encodeURIComponent(decodeFsText(connection.user || (isSmbPath(item.path) ? "Guest" : "")));
         if (user) address = address.replace(/^([a-z]+:\/\/)/, "$1" + user + "@");
-        password = readSmbPassword(connection) || "";
+        password = readRemotePassword(connection) || "";
       }
     }
     const data = await saveStoragePath(address, password);
@@ -1184,7 +1219,7 @@ async function addSmbConnection() {
           const at = authority[1].lastIndexOf("@");
           const credentials = authority[1].slice(0, at);
           const colon = credentials.indexOf(":");
-          password = colon >= 0 ? decodeURIComponent(credentials.slice(colon + 1)) : askSmbPassword(input);
+          password = colon >= 0 ? decodeURIComponent(credentials.slice(colon + 1)) : askRemotePassword(input);
           if (colon >= 0) clean = input.replace(authority[1], credentials.slice(0, colon) + "@" + authority[1].slice(at + 1));
         }
         if (/^smb:\/\/[^/]+\/?$/.test(clean)) {
@@ -1193,7 +1228,7 @@ async function addSmbConnection() {
             listing = await apiForm("/api/smb/shares", { address: clean, password: password });
           } catch (err) {
             if (password || err.code !== "smb_password_required") throw err;
-            password = askSmbPassword(clean);
+            password = askRemotePassword(clean);
             listing = await apiForm("/api/smb/shares", { address: clean, password: password });
           }
           if (!listing.shares.length) throw new Error(t("smbNoShares"));
@@ -3193,12 +3228,13 @@ seregonwar/zftpd, itsPLK/ps5-payload-manager,
 itsPLK/ps5-pkg-manager, libmicrohttpd, libsmb2,
 libcurl (FTP/WebDAV), yxml (WebDAV XML),
 ps5-payload-dev/sdk, etaHEN, ezremote,
-owendswang/ps5-web-browser-fullscreen.
+owendswang/ps5-web-browser-fullscreen,
+Hermes (bytecode opcode metadata).
 
 License:
 GPLv3 or later. Third-party licenses apply:
 libmicrohttpd: LGPL; libsmb2: LGPLv2.1 or later.
-libcurl: curl license; yxml: MIT.
+libcurl: curl license; yxml and Hermes metadata: MIT.
 See README.md for individual project licenses and full copyright/permission notices.`;
   aboutOverlayEl.hidden = false;
   aboutContentEl.scrollTop = 0;
@@ -3264,11 +3300,11 @@ window.addEventListener("beforeunload", event => {
   event.returnValue = "";
 });
 window.addEventListener("popstate", event => {
-  const path = event.state && event.state.path ? event.state.path : historyPath();
-  const smbRoot = isRemotePath(cwd) ? pathHistoryChain(cwd)[0] : "";
-  const holdSmbRoot = smbRoot && (!path || !smbContainsPath(smbRoot, path) ||
+  const path = browsePath(event.state && event.state.path) || historyPath();
+  const remoteRootPath = isRemotePath(cwd) ? pathHistoryChain(cwd)[0] : "";
+  const holdRemoteRoot = remoteRootPath && (!path || !remoteContainsPath(remoteRootPath, path) ||
     (parentPath(cwd) === cwd && parentPath(path) === path));
-  if (holdSmbRoot) history.pushState({ path: cwd }, "", "#" + encodeURIComponent(cwd));
+  if (holdRemoteRoot) history.pushState({ path: cwd }, "", "#" + encodeURIComponent(cwd));
   if (historyBlocked()) {
     writeHistoryPath(cwd, false);
     if (!aboutOverlayEl.hidden) {
@@ -3294,7 +3330,7 @@ window.addEventListener("popstate", event => {
     setStatus(t("activeTask"));
     return;
   }
-  if (holdSmbRoot) return;
+  if (holdRemoteRoot) return;
   if (path && path !== cwd) {
     const revealPath = parentPath(cwd) === path ? cwd : "";
     loadAndReveal(path, false, false, true, null, revealPath);

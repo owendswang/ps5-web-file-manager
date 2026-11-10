@@ -9,6 +9,7 @@
 /* FTP/WebDAV transport. SMB and native files retain their existing drivers. */
 int net_path(const char *path);
 int remote_path(const char *path);
+/* Encodes one name or a validated relative path, preserving its separators. */
 int net_join(char *out, size_t size, const char *dir, const char *name);
 int net_parse_address(const char *input, smb_address_t *address);
 int net_probe(const smb_address_t *address, struct statvfs *space);

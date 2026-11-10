@@ -8,20 +8,23 @@
 #include <stdlib.h>
 #include <string.h>
 
+void
+trim_whitespace(char *text) {
+  if(!text) return;
+  char *start = text;
+  while(isspace((unsigned char)*start)) start++;
+  size_t len = strlen(start);
+  while(len && isspace((unsigned char)start[len - 1])) len--;
+  memmove(text, start, len);
+  text[len] = 0;
+}
+
 char *
 query_value(struct MHD_Connection *conn, const char *key) {
   const char *raw = MHD_lookup_connection_value(conn, MHD_GET_ARGUMENT_KIND, key);
   char *value = raw ? strdup(raw) : NULL;
 
-  if(value && !strcmp(key, "name")) {
-    char *start = value;
-    char *end;
-    while(isspace((unsigned char)*start)) start++;
-    end = start + strlen(start);
-    while(end > start && isspace((unsigned char)end[-1])) end--;
-    memmove(value, start, (size_t)(end - start));
-    value[end - start] = 0;
-  }
+  if(!strcmp(key, "name")) trim_whitespace(value);
   return value;
 }
 
@@ -336,17 +339,7 @@ path_join_relative(char *out, size_t size, const char *dir, const char *rel) {
   if(!relative_path_safe(rel)) {
     return -1;
   }
-  if(net_path(dir)) {
-    char current[PATH_MAX];
-    char *copy=strdup(rel),*save=NULL;
-    if(!copy)return -1;
-    snprintf(current,sizeof(current),"%s",dir);
-    for(char *part=strtok_r(copy,"/",&save);part;part=strtok_r(NULL,"/",&save)) {
-      if(path_join(out,size,current,part)) { free(copy); return -1; }
-      snprintf(current,sizeof(current),"%s",out);
-    }
-    free(copy); return 0;
-  }
+  if(net_path(dir)) return net_join(out, size, dir, rel);
   n = snprintf(out, size, "%s%s%s", dir,
                (strcmp(dir, "/") && dir[strlen(dir) - 1] != '/') ? "/" : "",
                rel);
