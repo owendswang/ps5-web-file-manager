@@ -28,6 +28,7 @@ PS5 web file manager payload. It runs an HTTP UI starting at port `8888`, regist
 - Multi-select operations.
 - Browse SMB, FTP and WebDAV servers through **Manage Paths**, alongside local folder shortcuts.
 - Copy/move by choosing sources first, then pasting or moving them into the current folder.
+- Show a folder's total size, file count and subfolder count from the info button on its row, to check it fits before copying or moving it.
 - Conflict prompts for overwriting files and merging folders.
 - Extract archive files ending with `.7z`, `.001`, `.zip`, `.zipx`, `.rar`, `.part01.rar`, `.arj`, `.bz2`, `.bzip2`, `.tbz`, `.tbz2`, `.cab`, `.gz`, `.gzip`, `.tgz`, `.tpz`, `.lzh`, `.lha`, `.tar`, `.xz`, `.txz`, `.z`, `.taz`, `.zst`, `.tzst`, `.xar`, `.xip`, `.cpio`, `.lzma`, `.pmd`. Extraction requires the separately distributed [`wfm-7zip-helper.elf` helper](https://github.com/owendswang/wfm-7zip-helper) at `/data/wfm/wfm-7zip-helper.elf`.
 - Upload single files, multiple files, or folders from a remote browser using the file picker or full-page drag and drop. Upload is hidden in the PS5 browser because it is intended for another device on the network.
