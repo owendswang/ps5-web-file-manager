@@ -126,6 +126,8 @@ enum MHD_Result api_download_prepare(struct MHD_Connection *conn,
                                      const char *body, size_t body_size);
 enum MHD_Result api_download(struct MHD_Connection *conn);
 enum MHD_Result api_list(struct MHD_Connection *conn);
+enum MHD_Result api_size(struct MHD_Connection *conn);
+enum MHD_Result api_size_cancel(struct MHD_Connection *conn);
 enum MHD_Result api_space(struct MHD_Connection *conn);
 enum MHD_Result api_text(struct MHD_Connection *conn);
 enum MHD_Result api_text_create(struct MHD_Connection *conn);

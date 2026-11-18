@@ -1194,6 +1194,20 @@ input[type="checkbox"] {
   font: inherit;
 }
 
+.info-fields {
+  margin-bottom: 22px;
+  border-top: 1px solid #2d343d;
+}
+
+.info-fields .pkg-info-key {
+  width: 120px;
+  flex-basis: 120px;
+}
+
+.info-fields .pkg-info-value {
+  word-break: normal;
+}
+
 .permission-path {
   display: flex;
   margin: 10px 0 22px;
