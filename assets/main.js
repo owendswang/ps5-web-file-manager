@@ -38,7 +38,7 @@ let uploadXhr = null;
 let uploadTerminalAbort = false;
 let L = {};
 
-const APP_VERSION = "v1.14";
+const APP_VERSION = "v1.15";
 // Keep the existing storage prefix so saved passwords remain readable.
 const REMOTE_PASSWORD_KEY = "ps5-web-file-mgr:smb-password:";
 const remotePasswords = {};
@@ -197,6 +197,9 @@ function backendErrorText(code, arg, fallback) {
     const parts = String(arg || "").split(",");
     params.required = formatBytes(parts[0] || 0, false);
     params.available = formatBytes(parts[1] || 0, false);
+  }
+  if (code.indexOf("ntfs_readonly") === 0 || code === "ntfs_unclean") {
+    params.recovery = t("ntfsWriteRecovery");
   }
   const key = "err_" + code;
   return L[key] ? t(key, params) : fallback || t("backendError");
@@ -812,19 +815,23 @@ function fitSpaceOptions() {
   if (selected && selected.spaceName !== undefined) {
     const name = Array.from(selected.spaceName);
     if (context.measureText(text).width > width) {
-      while (name.length && context.measureText(selected.namePrefix + name.join("") + "…" + selected.spaceSuffix).width > width) {
+      let suffix = selected.spaceSuffix;
+      if (selected.readOnlySuffix && context.measureText("…" + suffix).width > width) {
+        suffix = selected.readOnlySuffix;
+      }
+      while (name.length && context.measureText(selected.namePrefix + name.join("") + "…" + suffix).width > width) {
         name.pop();
       }
-      text = selected.namePrefix + name.join("") + "…" + selected.spaceSuffix;
+      text = selected.namePrefix + name.join("") + "…" + suffix;
     }
   }
   spaceInfoEl.querySelector(".space-value").textContent = text;
   select.title = selected ? selected.title : "";
 }
 
-async function refreshSpaces() {
+async function refreshSpaces(rescan) {
   try {
-    const data = await api("/api/space", { path: cwd });
+    const data = await api("/api/space", rescan ? { path: cwd, rescan: "1" } : { path: cwd });
     const spaces = data.spaces || [];
     const previousConnections = remoteConnections;
     storagePaths = spaces.filter(item => item.custom || isRemotePath(item.path));
@@ -848,21 +855,24 @@ async function refreshSpaces() {
       option.value = item.path || "";
       const remote = isRemotePath(item.path);
       const name = remote ? displayPath(item.path).replace(/\/+$/, "").split("/").pop() :
-        item.label_key ? t(item.label_key) : displayPath(item.path || item.label);
+        item.label_key ? t(item.label_key, { name: item.label || "" }) : displayPath(item.path || item.label);
       const label = remote ? remoteProtocol(item.path) + " " + name : name;
+      const readOnlySuffix = item.read_only ? t("diskReadOnly") : "";
       const suffix = item.available === false ?
         t("diskUnavailable", { name: "" }) :
         item.custom && !remote ? "" :
         item.available === null ? t(isSmbPath(item.path) ? "diskSpaceUnknown" : "remoteCapacityUnknown", { name: "" }) :
         t("diskSpace", { name: "", free: formatBytes(item.free, false),
           total: formatBytes(item.total, false) });
-      option.textContent = label + suffix;
-      if (remote || item.custom) {
+      option.textContent = label + suffix + readOnlySuffix;
+      if (remote || item.custom || item.read_only) {
         option.spaceName = name;
         option.namePrefix = remote ? remoteProtocol(item.path) + " " : "";
-        option.spaceSuffix = suffix;
+        option.spaceSuffix = suffix + readOnlySuffix;
+        option.readOnlySuffix = readOnlySuffix;
       }
       option.title = displayPath(item.path) + " " + option.textContent;
+      if (item.read_only_code) option.title += "\n" + backendErrorText(item.read_only_code);
       if (item.label_key === "storageInternal") internalIndex = select.options.length;
       if ((!item.custom || remote) && item.current &&
           (currentIndex < 0 || option.value.length >= select.options[currentIndex].value.length)) {
@@ -1014,6 +1024,10 @@ function isSmbPath(path) {
 
 function isRemotePath(path) {
   return /^(?:smb|ftp|webdav|dav|http):\/\//.test(path);
+}
+
+function isNtfsPath(path) {
+  return /^\/mnt\/ntfs\d+p\d+(?:\/|$)/.test(path);
 }
 
 function normalizeRemotePath(path) {
@@ -1350,6 +1364,7 @@ function itemTypeLabel(item) {
 
 async function queuePkgInstall(items) {
   if (busy || loadingPath || !items.length) return;
+  if (items.length > 1 && confirm(t("pkgBatchInstallConfirm", { count: items.length })) !== true) return;
   try {
     localActionBusy = true;
     setBusy(true);
@@ -1614,7 +1629,7 @@ function renderSingleExtractPath() {
 
 function openExtractDialogForItems(items) {
   if (busy || loadingPath || !items.length) return;
-  if (isRemotePath(cwd) || items.some(item => isRemotePath(item.path))) {
+  if (isRemotePath(cwd) || isNtfsPath(cwd) || items.some(item => isRemotePath(item.path) || isNtfsPath(item.path))) {
     showActionFailed(t("extract"), t("smbLocalOperation"));
     return;
   }
@@ -1691,7 +1706,7 @@ function submitExtractDialog() {
     destination: useCustom ? extractCustomPathEl.value.trim() : cwd,
     separate: extractSeparateEl.checked || (useCustom && items.length > 1) ? "1" : "0"
   };
-  if (isRemotePath(request.destination)) {
+  if (isRemotePath(request.destination) || isNtfsPath(request.destination)) {
     showActionFailed(t("extract"), t("smbLocalOperation"));
     return;
   }
@@ -2048,7 +2063,7 @@ function updateButtons() {
   document.getElementById("mkdirBtn").disabled = locked;
   newTextBtn.disabled = locked;
   for (const button of filesEl.querySelectorAll(".row-action, .mode-action, .row-tool")) {
-    button.disabled = locked || (isRemotePath(cwd) && button.classList.contains("mode-action"));
+    button.disabled = locked || ((isRemotePath(cwd) || isNtfsPath(cwd)) && button.classList.contains("mode-action"));
   }
   for (const checkbox of filesEl.querySelectorAll(".select-cell input")) checkbox.disabled = locked;
   selectAllEl.disabled = locked;
@@ -2278,9 +2293,9 @@ function render() {
     const modeBtn = document.createElement("button");
     modeBtn.className = "mode-action";
     modeBtn.type = "button";
-    const remote = isRemotePath(item.path);
+    const remote = isRemotePath(item.path) || isNtfsPath(item.path);
     modeBtn.textContent = remote ? "—" : permissionModeText(item.mode);
-    modeBtn.title = remote ? t("smbPermissions") : t("permissionChangeTitle", { name: displayName(item) });
+    modeBtn.title = isNtfsPath(item.path) ? t("ntfsPermissions") : remote ? t("smbPermissions") : t("permissionChangeTitle", { name: displayName(item) });
     modeBtn.setAttribute("aria-label", modeBtn.title);
     modeBtn.disabled = remote || busy || Boolean(loadingPath);
     modeBtn.addEventListener("click", event => {
@@ -2343,7 +2358,7 @@ function classCell(className, text) {
   return td;
 }
 
-async function load(path, scrollTop, force, alertOnError, historyMode) {
+async function load(path, scrollTop, force, alertOnError, historyMode, rescan) {
   const shouldScrollTop = scrollTop !== false;
   if ((busy && !force) || loadingPath) return;
   loadingPath = path;
@@ -2362,7 +2377,7 @@ async function load(path, scrollTop, force, alertOnError, historyMode) {
     savePath(cwd);
     if (historyMode === "seed") seedHistoryPath(cwd);
     else if (historyMode) writeHistoryPath(cwd, historyMode === "replace");
-    refreshSpaces();
+    refreshSpaces(rescan);
     entries = data.entries.sort(compareEntries);
     selected.clear();
     focusedPath = null;
@@ -2372,6 +2387,7 @@ async function load(path, scrollTop, force, alertOnError, historyMode) {
     return true;
   } catch (err) {
     setStatus(err.message);
+    if (rescan) refreshSpaces(true);
     if (alertOnError && err.code !== "smb_password_canceled") alert(err.message);
     return false;
   } finally {
@@ -3191,7 +3207,7 @@ function actionExit() {
   });
 }
 
-document.getElementById("refreshBtn").addEventListener("click", () => load(cwd, false));
+document.getElementById("refreshBtn").addEventListener("click", () => load(cwd, false, false, false, undefined, true));
 document.getElementById("mkdirBtn").addEventListener("click", () => {
   if (busy || loadingPath) return;
   const path = cwd;
@@ -3227,6 +3243,7 @@ ps5-payload-dev/websrv, ps5-payload-dev/ftpsrv,
 seregonwar/zftpd, itsPLK/ps5-payload-manager,
 itsPLK/ps5-pkg-manager, libmicrohttpd, libsmb2,
 libcurl (FTP/WebDAV), yxml (WebDAV XML),
+NTFS-3G / libntfs-3g (USB NTFS),
 ps5-payload-dev/sdk, etaHEN, ezremote,
 owendswang/ps5-web-browser-fullscreen,
 Hermes (bytecode opcode metadata).
@@ -3235,6 +3252,7 @@ License:
 GPLv3 or later. Third-party licenses apply:
 libmicrohttpd: LGPL; libsmb2: LGPLv2.1 or later.
 libcurl: curl license; yxml and Hermes metadata: MIT.
+libntfs-3g: GPLv2 or later, used under GPLv3 or later.
 See README.md for individual project licenses and full copyright/permission notices.`;
   aboutOverlayEl.hidden = false;
   aboutContentEl.scrollTop = 0;

@@ -13,7 +13,7 @@ ifeq ($(MAKECMDGOALS),)
   endif
 endif
 
-VERSION_TAG := v1.14
+VERSION_TAG := v1.15
 TITLE_ID    := FMGR88888
 PYTHON      ?= python3
 CMAKE       ?= cmake
@@ -28,7 +28,7 @@ LINUX_BIN  := web-file-mgr-linux
 PS5_DEBUG  := $(if $(filter debug,$(MAKECMDGOALS)),1,0)
 PS5_BUILD_DIR := .build-ps5/$(if $(filter debug,$(MAKECMDGOALS)),debug,release)
 PS5_BUILD_BIN := $(PS5_BUILD_DIR)/$(BIN)
-COMMON_SRCS := src/main.c src/websrv.c src/filemgr.c src/file_response.c src/task.c src/upload.c src/download.c src/text.c src/list.c src/space.c src/fs_util.c src/json_util.c src/path_util.c src/asset.c src/mime.c src/notify.c src/pkg_installer.c src/pkg_info.c src/archive_extract.c src/archive_helper.c src/smb.c src/remote.c src/vfs.c src/transfer.c vendor/yxml/yxml.c
+COMMON_SRCS := src/main.c src/websrv.c src/filemgr.c src/file_response.c src/task.c src/upload.c src/download.c src/text.c src/list.c src/space.c src/fs_util.c src/json_util.c src/path_util.c src/asset.c src/mime.c src/notify.c src/pkg_installer.c src/pkg_info.c src/archive_extract.c src/archive_helper.c src/smb.c src/remote.c src/ntfs.c src/vfs.c src/transfer.c vendor/yxml/yxml.c
 PS5_SRCS    := $(COMMON_SRCS) src/app_installer.c src/browser_patch.c .build-fullscreen/hbc_patch.c
 HEADERS     := $(wildcard src/*.h)
 FULLSCREEN_HEAD := $(shell if test -f vendor/browser-fullscreen/.git; then git -C vendor/browser-fullscreen rev-parse --git-path HEAD; fi)
@@ -51,6 +51,11 @@ CURL_FLAGS += -DCURL_DISABLE_BEARER_AUTH=ON -DCURL_DISABLE_KERBEROS_AUTH=ON -DCU
 CURL_FLAGS += -DCURL_DISABLE_BINDLOCAL=ON -DCURL_DISABLE_SOCKETPAIR=ON -DCURL_DISABLE_SHUFFLE_DNS=ON -DENABLE_UNIX_SOCKETS=OFF
 # Verbose tracing is unused; curl's error buffer and our debug logs remain available.
 CURL_FLAGS += -DCURL_DISABLE_VERBOSE_STRINGS=ON -DBUILD_LIBCURL_DOCS=OFF -DBUILD_MISC_DOCS=OFF -DBUILD_EXAMPLES=OFF -DENABLE_CURL_MANUAL=OFF
+NTFS_HEAD := $(shell git -C vendor/ntfs-3g rev-parse --git-path HEAD 2>/dev/null)
+NTFS_INPUTS := $(NTFS_HEAD) $(wildcard vendor/ntfs-3g/libntfs-3g/*.[ch] vendor/ntfs-3g/include/ntfs-3g/*.h) vendor/ntfs-3g/configure.ac
+NTFS_FLAGS := --disable-shared --enable-static --disable-ntfs-3g --disable-ntfsprogs --disable-plugins --disable-crypto --disable-ldconfig
+NTFS_LIB := .build-ntfs/ps5/libntfs-3g/.libs/libntfs-3g.a
+NTFS_LINUX_LIB := .build-ntfs/linux/libntfs-3g/.libs/libntfs-3g.a
 LINUX_SRCS  := $(COMMON_SRCS)
 BASE_ASSETS := $(filter-out %.dds,$(wildcard assets/*))
 ifneq ($(filter linux,$(MAKECMDGOALS)),)
@@ -67,6 +72,7 @@ CFLAGS += -DWFM_DEBUG=$(PS5_DEBUG)
 CFLAGS += -DFULLSCREEN_LIVE_PLAN=0
 CFLAGS += -Ivendor/libsmb2/include
 CFLAGS += -Ivendor/curl/include -Ivendor/yxml -DCURL_STATICLIB
+CFLAGS += -I.build-ntfs/source/include
 LDFLAGS := -Wl,--gc-sections
 LDADD  := `$(PKG_CONFIG) libmicrohttpd --libs`
 LDADD  += -lSceIpmi -lSceAppInstUtil -lSceUserService -lSceSystemService
@@ -75,6 +81,7 @@ LINUX_CFLAGS += `$(HOST_PKG_CONFIG) libmicrohttpd --cflags`
 LINUX_CFLAGS += -DWFM_DEBUG=1
 LINUX_CFLAGS += -Ivendor/libsmb2/include
 LINUX_CFLAGS += -Ivendor/curl/include -Ivendor/yxml -DCURL_STATICLIB
+LINUX_CFLAGS += -I.build-ntfs/source/include
 LINUX_LDADD := `$(HOST_PKG_CONFIG) libmicrohttpd --libs` -pthread
 
 .PHONY: all debug linux deps linux-deps clean force-ps5-copy
@@ -102,6 +109,7 @@ clean:
 	rm -rf .build-smb2
 	rm -rf .build-fullscreen
 	rm -rf .build-curl
+	rm -rf .build-ntfs
 
 gen/%.c: assets/% gen-asset-module.py | gen
 	$(PYTHON) gen-asset-module.py --path $* $< > $@
@@ -109,13 +117,13 @@ gen/%.c: assets/% gen-asset-module.py | gen
 $(BIN): $(PS5_BUILD_BIN) force-ps5-copy
 	cp $< $@
 
-$(PS5_BUILD_BIN): $(PS5_SRCS) $(HEADERS) $(GEN_SRCS) assets/icon0.png assets/param.json Makefile $(SMB2_PS5_LIB) $(CURL_LIB) .build-fullscreen/source.stamp
+$(PS5_BUILD_BIN): $(PS5_SRCS) $(HEADERS) $(GEN_SRCS) assets/icon0.png assets/param.json Makefile $(SMB2_PS5_LIB) $(CURL_LIB) $(NTFS_LIB) .build-fullscreen/source.stamp
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c,$^) $(SMB2_PS5_LIB) $(CURL_LIB) $(LDADD)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c,$^) $(SMB2_PS5_LIB) $(CURL_LIB) $(NTFS_LIB) $(LDADD)
 	$(STRIP) $@
 
-$(LINUX_BIN): $(LINUX_SRCS) $(HEADERS) $(GEN_SRCS) Makefile $(SMB2_LINUX_LIB) $(CURL_LINUX_LIB)
-	$(HOST_CC) $(LINUX_CFLAGS) -o $@ $(filter %.c,$^) $(SMB2_LINUX_LIB) $(CURL_LINUX_LIB) $(LINUX_LDADD)
+$(LINUX_BIN): $(LINUX_SRCS) $(HEADERS) $(GEN_SRCS) Makefile $(SMB2_LINUX_LIB) $(CURL_LINUX_LIB) $(NTFS_LINUX_LIB)
+	$(HOST_CC) $(LINUX_CFLAGS) -o $@ $(filter %.c,$^) $(SMB2_LINUX_LIB) $(CURL_LINUX_LIB) $(NTFS_LINUX_LIB) $(LINUX_LDADD)
 	$(HOST_STRIP) $@
 
 .build-fullscreen/source.stamp: Makefile patches/browser-fullscreen-embed.patch .gitmodules $(FULLSCREEN_INPUTS)
@@ -166,3 +174,26 @@ $(CURL_LIB): $(CURL_INPUTS) Makefile
 	  -DCMAKE_C_FLAGS='-flto=thin -ffunction-sections -fdata-sections -fno-unwind-tables -fno-asynchronous-unwind-tables' \
 	  -DCMAKE_AR=$(PS5_PAYLOAD_SDK)/bin/prospero-ar -DCMAKE_RANLIB=$(PS5_PAYLOAD_SDK)/bin/prospero-ranlib
 	$(CMAKE) --build .build-curl/ps5 --target libcurl_static --parallel 4
+
+.build-ntfs/source.stamp: $(NTFS_INPUTS) patches/ntfs-3g-library.patch .gitmodules
+	@test -f vendor/ntfs-3g/libntfs-3g/volume.c || (echo "Initialize ntfs-3g submodule first" >&2; exit 1)
+	rm -rf .build-ntfs/source
+	mkdir -p .build-ntfs/source
+	cp -R vendor/ntfs-3g/. .build-ntfs/source/
+	rm -f .build-ntfs/source/.git
+	git apply --directory=.build-ntfs/source patches/ntfs-3g-library.patch
+	cd .build-ntfs/source && autoreconf -fi
+	touch $@
+
+$(NTFS_LINUX_LIB): .build-ntfs/source.stamp Makefile
+	mkdir -p .build-ntfs/linux
+	cd .build-ntfs/linux && ../source/configure $(NTFS_FLAGS) CC="$(HOST_CC)" CFLAGS='-Os -ffunction-sections -fdata-sections'
+	$(MAKE) -C .build-ntfs/linux/libntfs-3g -j4
+
+$(NTFS_LIB): .build-ntfs/source.stamp Makefile
+	mkdir -p .build-ntfs/ps5
+	cd .build-ntfs/ps5 && ../source/configure $(NTFS_FLAGS) --host=x86_64-unknown-freebsd \
+	  CC="$(PS5_PAYLOAD_SDK)/bin/prospero-clang" AR="$(PS5_PAYLOAD_SDK)/bin/prospero-ar" \
+	  RANLIB="$(PS5_PAYLOAD_SDK)/bin/prospero-ranlib" STRIP="$(PS5_PAYLOAD_SDK)/bin/prospero-strip" \
+	  CFLAGS='-Oz -flto=thin -ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables -fno-unwind-tables'
+	$(MAKE) -C .build-ntfs/ps5/libntfs-3g -j4

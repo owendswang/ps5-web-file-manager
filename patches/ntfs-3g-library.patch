@@ -1,0 +1,29 @@
+diff --git a/configure.ac b/configure.ac
+--- a/configure.ac
++++ b/configure.ac
+@@ -26,2 +26,5 @@
+ # Autoconf
++# WFM never builds crypto tools; do not require libgcrypt's build-time macros.
++m4_ifndef([AM_PATH_LIBGCRYPT],
++ [AC_DEFUN([AM_PATH_LIBGCRYPT], [$3])])
+ AC_PREREQ(2.59)
+diff --git a/include/ntfs-3g/volume.h b/include/ntfs-3g/volume.h
+--- a/include/ntfs-3g/volume.h
++++ b/include/ntfs-3g/volume.h
+@@ -301,4 +301,6 @@
+ extern ntfs_volume *ntfs_mount(const char *name, ntfs_mount_flags flags);
+ extern int ntfs_umount(ntfs_volume *vol, const BOOL force);
++/* Allow a read-only preflight before opening the USB device for writing. */
++extern int ntfs_volume_check_logfile(ntfs_volume *vol);
+ 
+ extern int ntfs_version_is_supported(ntfs_volume *vol);
+diff --git a/libntfs-3g/volume.c b/libntfs-3g/volume.c
+--- a/libntfs-3g/volume.c
++++ b/libntfs-3g/volume.c
+@@ -676,5 +676,5 @@
+  * Return 0 on success and -1 on error with errno set error code.
+  */
+-static int ntfs_volume_check_logfile(ntfs_volume *vol)
++int ntfs_volume_check_logfile(ntfs_volume *vol)
+ {
+ 	ntfs_inode *ni;

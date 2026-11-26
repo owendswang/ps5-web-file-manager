@@ -1,5 +1,6 @@
 #include "pkg_installer.h"
 
+#include <errno.h>
 #include <limits.h>
 #include <pthread.h>
 #include <stdint.h>
@@ -11,25 +12,37 @@
 
 #include "smb.h"
 #include "remote.h"
+#include "ntfs.h"
 #include "websrv.h"
 #include "pkg_info.h"
 #include "path_util.h"
 #include "vfs.h"
 
-/* Keep successful source URLs alive: installation can continue after submission. */
-struct pkg_install_source {
+/* Keep source URLs available across asynchronous requests without pinning the file. */
+typedef struct pkg_install_source {
   char name[64];
-  int fd;
+  struct stat original;
   unsigned int refs;
   struct pkg_install_source *next;
-};
+  char path[];
+} pkg_install_source_t;
 static pkg_install_source_t *sources;
 static pthread_mutex_t sources_lock = PTHREAD_MUTEX_INITIALIZER;
 
-pkg_install_source_t *pkg_installer_source_acquire(const char *name) {
+static void source_release(pkg_install_source_t *source) {
+  pthread_mutex_lock(&sources_lock);
+  int dispose = --source->refs == 0;
+  pthread_mutex_unlock(&sources_lock);
+  if(dispose) free(source);
+}
+
+int pkg_installer_source_open(const char *name, struct stat *info) {
   pkg_install_source_t *source = NULL;
   const char *extension = strrchr(name, '.');
-  if(!extension || (strcmp(extension, ".pkg") && strcmp(extension, ".png"))) return NULL;
+  if(!extension || (strcmp(extension, ".pkg") && strcmp(extension, ".png"))) {
+    errno = ENOENT;
+    return -1;
+  }
   pthread_mutex_lock(&sources_lock);
   for(pkg_install_source_t *item = sources; item; item = item->next) {
     if(strlen(item->name) == (size_t)(extension - name) && !strncmp(item->name, name, (size_t)(extension - name))) {
@@ -39,19 +52,27 @@ pkg_install_source_t *pkg_installer_source_acquire(const char *name) {
     }
   }
   pthread_mutex_unlock(&sources_lock);
-  return source;
-}
-
-int pkg_installer_source_fd(const pkg_install_source_t *source) {
-  return source->fd;
-}
-
-void pkg_installer_source_release(pkg_install_source_t *source) {
-  if(!source) return;
-  pthread_mutex_lock(&sources_lock);
-  int dispose = --source->refs == 0;
-  pthread_mutex_unlock(&sources_lock);
-  if(dispose) { close(source->fd); free(source); }
+  if(!source) {
+    errno = ENOENT;
+    return -1;
+  }
+  int fd = open(source->path, O_RDONLY | O_NONBLOCK);
+  if(fd >= 0) {
+    struct stat st;
+    const struct stat *original = &source->original;
+    if(fstat(fd, &st) || !S_ISREG(st.st_mode) || st.st_size != original->st_size ||
+       st.st_dev != original->st_dev || st.st_ino != original->st_ino ||
+       st.st_mtim.tv_sec != original->st_mtim.tv_sec ||
+       st.st_mtim.tv_nsec != original->st_mtim.tv_nsec) {
+      close(fd);
+      errno = ESTALE;
+      fd = -1;
+    } else if(info) {
+      *info = st;
+    }
+  }
+  source_release(source);
+  return fd;
 }
 
 #ifndef __linux__
@@ -141,7 +162,7 @@ pkg_installer_install(const char *path) {
   char file_name[PATH_MAX];
 
   if(!path) return -1;
-  remote = remote_path(path);
+  remote = remote_path(path) || usbntfs_path(path);
   pkg_read_details(path, &details);
   path_basename_copy(path, file_name, sizeof(file_name));
   metadata.content_name = details.title[0] ? details.title : file_name;
@@ -154,9 +175,17 @@ pkg_installer_install(const char *path) {
   if(remote || details.has_icon) {
     unsigned short port = websrv_port();
     struct timespec now;
-    if(!port || clock_gettime(CLOCK_REALTIME, &now) || !(source = calloc(1, sizeof(*source)))) return -1;
-    source->fd = open(path, O_RDONLY);
-    if(source->fd < 0) { free(source); return -1; }
+    struct stat st;
+    if(!port || clock_gettime(CLOCK_REALTIME, &now)) return -1;
+    int fd = open(path, O_RDONLY | O_NONBLOCK);
+    if(fd < 0) return -1;
+    int valid = !fstat(fd, &st) && S_ISREG(st.st_mode);
+    close(fd);
+    if(!valid) return -1;
+    size_t path_size = strlen(path) + 1;
+    if(!(source = calloc(1, sizeof(*source) + path_size))) return -1;
+    source->original = st;
+    memcpy(source->path, path, path_size);
     source->refs = 1; /* Registry ownership, also after install submission. */
     static unsigned long serial;
     pthread_mutex_lock(&sources_lock);
@@ -189,7 +218,7 @@ pkg_installer_install(const char *path) {
     while(*link && *link != source) link = &(*link)->next;
     if(*link) *link = source->next;
     pthread_mutex_unlock(&sources_lock);
-    pkg_installer_source_release(source);
+    source_release(source);
   }
   return result;
 }

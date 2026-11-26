@@ -31,6 +31,7 @@
 #include "websrv.h"
 #include "smb.h"
 #include "remote.h"
+#include "ntfs.h"
 #include "vfs.h"
 #include "transfer.h"
 #include "notify.h"
@@ -273,6 +274,7 @@ send_json_error(struct MHD_Connection *conn, unsigned int status,
 enum MHD_Result
 send_json_error_detail(struct MHD_Connection *conn, unsigned int status,
                        const char *msg, const char *code, const char *arg) {
+  if(usbntfs_error())code=usbntfs_error();
   strbuf_t b = {0};
   const char *fallback = msg ? msg : strerror(errno);
 
@@ -879,6 +881,8 @@ check_task_targets_writable(file_task_t *task, char *error, size_t error_size,
     }
     if(check_target_writable(target, &checked_dirs, &checked_dir_count,
                              error, error_size, code, code_size, arg, arg_size)) {
+      const char *ntfs_code = usbntfs_error();
+      if(ntfs_code) snprintf(code, code_size, "%s", ntfs_code);
       free_paths(checked_dirs, checked_dir_count);
       return -1;
     }
@@ -1006,6 +1010,7 @@ extract_task_worker(file_task_t *task) {
 
 static void *
 task_worker(void *arg) {
+  usbntfs_clear_error();
   file_task_t *task = arg;
   unsigned long long total = 0;
   unsigned long long required = 0;
@@ -1016,6 +1021,15 @@ task_worker(void *arg) {
   if(task_cancel_requested(task)) {
     task_update(task, TASK_CANCELED, task->src, 0, "canceled");
     return NULL;
+  }
+  if(task->op==TASK_MOVE || task->op==TASK_DELETE || task->op==TASK_CHMOD) {
+    for(size_t i=0;i<task->src_count;i++) {
+      if(usbntfs_path(task->srcs[i]) && usbntfs_access(task->srcs[i],W_OK)) {
+        task_set_error_code(task,usbntfs_error(),NULL);
+        task_update(task,TASK_FAILED,task->srcs[i],0,strerror(errno));
+        return NULL;
+      }
+    }
   }
   if(task->op == TASK_EXTRACT) {
     return extract_task_worker(task);
@@ -1160,7 +1174,8 @@ task_worker(void *arg) {
       task_update(task, TASK_CANCELED, task->current[0] ? task->current : task->src,
                   0, "canceled");
     } else {
-      if(task->op == TASK_CHMOD) {
+      if(usbntfs_error())task_set_error_code(task,usbntfs_error(),NULL);
+      else if(task->op == TASK_CHMOD) {
         task_set_error_code(task, "chmod_failed",
                             task->current[0] ? task->current : task->src);
       }
@@ -1841,7 +1856,7 @@ api_extract(struct MHD_Connection *conn, const char *body, size_t body_size) {
   }
   separate = !strcmp(separate_text, "1");
   overwrite = overwrite_text && !strcmp(overwrite_text, "1");
-  if(remote_path(destination)) {
+  if(remote_path(destination) || usbntfs_path(destination)) {
     result = send_json_error(conn, MHD_HTTP_BAD_REQUEST,
                              "archive extraction requires local storage");
     goto done;
@@ -1869,7 +1884,7 @@ api_extract(struct MHD_Connection *conn, const char *body, size_t body_size) {
   for(size_t i = 0; i < count; i++) {
     char target[PATH_MAX];
 
-    if(remote_path(paths[i])) {
+    if(remote_path(paths[i]) || usbntfs_path(paths[i])) {
       result = send_json_error(conn, MHD_HTTP_BAD_REQUEST,
                                "copy the archive to local storage first");
       goto done;

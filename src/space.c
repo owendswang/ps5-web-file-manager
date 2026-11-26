@@ -13,6 +13,7 @@
 #include "path_util.h"
 #include "smb.h"
 #include "remote.h"
+#include "ntfs.h"
 
 static unsigned long long
 vfs_bytes(fsblkcnt_t blocks, unsigned long block_size) {
@@ -56,6 +57,7 @@ api_space(struct MHD_Connection *conn) {
   };
 #endif
   char *current = fs_path_value(query_value(conn, "path"));
+  const char *rescan = MHD_lookup_connection_value(conn, MHD_GET_ARGUMENT_KIND, "rescan");
   strbuf_t b = {0};
   int first = 1;
 
@@ -124,6 +126,7 @@ api_space(struct MHD_Connection *conn) {
                   free_bytes, total_bytes, remote_path(current) ? "false" : "true");
   }
 #endif
+  usbntfs_spaces(&b, current, &first, rescan && !strcmp(rescan, "1"));
   smb_append_spaces(&b, current, &first);
   free(current);
   strbuf_append(&b, "]}");

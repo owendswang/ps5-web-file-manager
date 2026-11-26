@@ -1,8 +1,12 @@
 #include "smb.h"
 #include "remote.h"
+#include "ntfs.h"
 #include "filemgr_internal.h"
 #include "path_util.h"
 #include "transfer.h"
+#define WFM_VFS_IMPLEMENTATION
+#include "vfs.h"
+#undef WFM_VFS_IMPLEMENTATION
 
 #include <ctype.h>
 #include <dirent.h>
@@ -484,8 +488,9 @@ enum MHD_Result api_smb_shares(struct MHD_Connection *conn, const char *body, si
 static void local_space(saved_smb_t *saved) {
   struct stat st;
   struct statvfs vfs;
-  saved->available = stat(saved->address.path, &st) || !S_ISDIR(st.st_mode) ? 0 :
-    statvfs(saved->address.path, &vfs) ? -1 : 1;
+  const char *path=saved->address.path;
+  saved->available = wfm_stat(path,&st) || !S_ISDIR(st.st_mode) ? 0 :
+    wfm_statvfs(path,&vfs) ? -1 : 1;
   if(saved->available == 1) {
     unsigned long long block = vfs.f_frsize ? vfs.f_frsize : vfs.f_bsize;
     saved->free_bytes = vfs.f_bavail * block;
@@ -503,7 +508,11 @@ enum MHD_Result api_smb_add(struct MHD_Connection *conn, const char *body, size_
   int invalid, duplicate = 0;
   if(!input) { errno = EINVAL; invalid = 1; }
   else if(local) {
-    invalid = !realpath(input, a.path);
+    if(usbntfs_path(input)) {
+      struct stat st;
+      invalid = strlen(input)>=sizeof(a.path) || usbntfs_stat(input,&st);
+      if(!invalid)snprintf(a.path,sizeof(a.path),"%s",input);
+    } else invalid = !realpath(input, a.path);
     if(!invalid && strpbrk(a.path, "\r\n\t")) { errno = EINVAL; invalid = 1; }
   } else invalid = net_path(input)?net_parse_address(input,&a):smb_parse_address(input, &a);
   if(invalid) {
@@ -533,12 +542,12 @@ enum MHD_Result api_smb_add(struct MHD_Connection *conn, const char *body, size_
   if(config_error) return send_json_error_detail(conn, MHD_HTTP_INTERNAL_SERVER_ERROR, "could not read storage configuration", "storage_config_read_failed", strerror(config_error));
   saved_smb_t added = {.address = a, .authenticated = 1, .checked_at = time(NULL)};
   if(local) {
-    DIR *dir = opendir(a.path);
+    wfm_dir_t *dir = wfm_opendir(a.path);
     if(!dir) {
       int error = errno;
       return send_json_error_detail(conn, MHD_HTTP_BAD_REQUEST, strerror(error), path_error_code(error), strerror(error));
     }
-    closedir(dir);
+    wfm_closedir(dir);
     if(builtin_local_path(a.path)) { duplicate = 1; goto respond; }
     local_space(&added);
   } else if(net_path(a.path)) {
@@ -672,6 +681,7 @@ static void *refresh_spaces(void *current) {
   pthread_mutex_unlock(&config_mutex);
   for(size_t i = 0; snapshot && i < count; i++) {
     saved_smb_t *saved = &snapshot[i];
+    if(usbntfs_path(saved->address.path)) continue;
     if(remote_path(saved->address.path) && (strcmp(saved->address.path, current) ||
        (!saved->authenticated && saved->address.user[0] && strcasecmp(saved->address.user, "Guest") &&
         strcasecmp(saved->address.user, "anonymous")))) continue;
@@ -731,9 +741,11 @@ void smb_append_spaces(strbuf_t *json, const char *current, int *first) {
       current_length = len;
       current_index = i;
     }
-    if(connections[i].address.path[0] == '/' && time(NULL) - connections[i].checked_at >= 30) stale = 1;
+    if(connections[i].address.path[0] == '/' && !usbntfs_path(connections[i].address.path) &&
+       time(NULL) - connections[i].checked_at >= 30) stale = 1;
   }
-  if(current_index < connection_count && time(NULL) - connections[current_index].checked_at >= 30) stale = 1;
+  if(current_index < connection_count && !usbntfs_path(connections[current_index].address.path) &&
+     time(NULL) - connections[current_index].checked_at >= 30) stale = 1;
   /* Offline servers must not delay returning the shared disk list. */
   if(stale && !refreshing_spaces) {
     pthread_t thread;
@@ -748,6 +760,7 @@ void smb_append_spaces(strbuf_t *json, const char *current, int *first) {
     for(size_t i = 0; i < connection_count; i++) {
       saved_smb_t *saved = &connections[i];
       if((saved->address.path[0] == '/') != local) continue;
+      int available = usbntfs_path(saved->address.path) ? usbntfs_present(saved->address.path) : saved->available;
       if(!*first) strbuf_append(json, ",");
       *first = 0;
       strbuf_append(json, "{\"custom\":true,\"label\":");
@@ -757,7 +770,7 @@ void smb_append_spaces(strbuf_t *json, const char *current, int *first) {
       strbuf_append(json, ",\"user\":"); json_escape(json, saved->address.user);
       strbuf_append(json, ",\"domain\":"); json_escape(json, saved->address.domain);
       strbuf_printf(json, ",\"free\":%llu,\"total\":%llu,\"available\":%s,\"current\":%s}",
-        saved->free_bytes, saved->total_bytes, saved->available < 0 ? "null" : saved->available ? "true" : "false",
+        saved->free_bytes, saved->total_bytes, available < 0 ? "null" : available ? "true" : "false",
         i == current_index ? "true" : "false");
     }
   }

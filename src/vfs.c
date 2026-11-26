@@ -2,6 +2,7 @@
 #include "vfs.h"
 #include "smb.h"
 #include "remote.h"
+#include "ntfs.h"
 #include "path_util.h"
 #include "transfer.h"
 
@@ -33,6 +34,7 @@ static remote_file_t remote_files[SMB_FD_COUNT];
 struct wfm_dir {
   DIR *native;
   net_dir_t *network;
+  usbntfs_dir_t *ntfs;
   struct smb2_context *ctx;
   struct smb2dir *remote;
   struct dirent entry;
@@ -53,6 +55,7 @@ static remote_file_t *remote_file(int fd) {
 }
 
 void wfm_set_transfer_size(int fd, uint64_t size) {
+  if(usbntfs_fd(fd))return;
   if(net_fd(fd)) { net_set_size(fd,size); return; }
   if(!wfm_fd_remote(fd)) return;
   smb_lock();
@@ -87,6 +90,7 @@ static void convert_stat(const struct smb2_stat_64 *in, dev_t device, struct sta
 }
 
 int wfm_stat(const char *path, struct stat *st) {
+  if(usbntfs_path(path))return usbntfs_stat(path,st);
   if(net_path(path))return net_stat(path,st);
   if(!smb_path(path)) return stat(path, st);
   smb_lock();
@@ -113,10 +117,12 @@ int wfm_stat(const char *path, struct stat *st) {
   return result;
 }
 int wfm_lstat(const char *path, struct stat *st) {
+  if(usbntfs_path(path))return usbntfs_stat(path,st);
   if(net_path(path))return net_stat(path,st);
   return smb_path(path) ? wfm_stat(path, st) : lstat(path, st);
 }
 int wfm_fstat(int fd, struct stat *st) {
+  if(usbntfs_fd(fd))return usbntfs_fstat(fd,st);
   if(net_fd(fd))return net_fstat(fd,st);
   if(!wfm_fd_remote(fd)) return fstat(fd, st);
   smb_lock();
@@ -131,6 +137,7 @@ int wfm_fstat(int fd, struct stat *st) {
   return result;
 }
 int wfm_statvfs(const char *path, struct statvfs *st) {
+  if(usbntfs_path(path))return usbntfs_statvfs(path,st);
   if(net_path(path))return net_statvfs(path,st);
   if(!smb_path(path)) return statvfs(path, st);
   smb_lock();
@@ -156,6 +163,11 @@ int wfm_statvfs(const char *path, struct statvfs *st) {
 wfm_dir_t *wfm_opendir(const char *path) {
   wfm_dir_t *dir = calloc(1, sizeof(*dir));
   if(!dir) return NULL;
+  if(usbntfs_path(path)) {
+    dir->ntfs=usbntfs_opendir(path);
+    if(dir->ntfs)return dir;
+    free(dir); return NULL;
+  }
   if(net_path(path)) {
     dir->network=net_opendir(path);
     if(dir->network)return dir;
@@ -184,6 +196,7 @@ wfm_dir_t *wfm_opendir(const char *path) {
   return dir;
 }
 struct dirent *wfm_readdir(wfm_dir_t *dir) {
+  if(dir->ntfs)return usbntfs_readdir(dir->ntfs);
   if(dir->network)return net_readdir(dir->network);
   if(dir->error) { errno = dir->error; return NULL; }
   if(dir->native) {
@@ -207,13 +220,15 @@ struct dirent *wfm_readdir(wfm_dir_t *dir) {
   return &dir->entry;
 }
 int wfm_dir_error(wfm_dir_t *dir) {
+  if(dir->ntfs) { dir->error=usbntfs_dir_error(dir->ntfs); }
   if(dir->error) errno = dir->error;
   return dir->error;
 }
 int wfm_closedir(wfm_dir_t *dir) {
   int saved_errno = errno;
   int result = 0;
-  if(dir->network)net_closedir(dir->network);
+  if(dir->ntfs)result=usbntfs_closedir(dir->ntfs);
+  else if(dir->network)net_closedir(dir->network);
   else if(dir->native) result = closedir(dir->native);
   else {
     smb_lock();
@@ -230,6 +245,7 @@ int wfm_closedir(wfm_dir_t *dir) {
 }
 
 int wfm_open(const char *path, int flags, ...) {
+  if(usbntfs_path(path))return usbntfs_open(path,flags);
   if(net_path(path))return net_open(path,flags);
   mode_t mode = 0;
   if(flags & O_CREAT) { va_list args; va_start(args, flags); mode = (mode_t)va_arg(args, int); va_end(args); }
@@ -257,6 +273,7 @@ int wfm_open(const char *path, int flags, ...) {
   return SMB_FD_BASE + (int)index;
 }
 int wfm_close(int fd) {
+  if(usbntfs_fd(fd))return usbntfs_close(fd);
   if(net_fd(fd))return net_close(fd);
   if(!wfm_fd_remote(fd)) return close(fd);
   int original_errno = errno;
@@ -405,19 +422,23 @@ static ssize_t remote_io(int fd, void *data, size_t size, off_t offset, int writ
   return result;
 }
 ssize_t wfm_read(int fd, void *data, size_t size) {
+  if(usbntfs_fd(fd))return usbntfs_read(fd,data,size);
   if(net_fd(fd))return net_read(fd,data,size);
   return wfm_fd_remote(fd) ? remote_io(fd, data, size, -1, 0) : read(fd, data, size);
 }
 ssize_t wfm_write(int fd, const void *data, size_t size) {
+  if(usbntfs_fd(fd))return usbntfs_write(fd,data,size);
   if(net_fd(fd))return net_write(fd,data,size);
   return wfm_fd_remote(fd) ? remote_io(fd, (void *)data, size, -1, 1) : write(fd, data, size);
 }
 ssize_t wfm_pread(int fd, void *data, size_t size, off_t offset) {
+  if(usbntfs_fd(fd))return usbntfs_pread(fd,data,size,offset);
   if(net_fd(fd))return net_pread(fd,data,size,offset);
   if(offset < 0) { errno = EINVAL; return -1; }
   return wfm_fd_remote(fd) ? remote_io(fd, data, size, offset, 0) : pread(fd, data, size, offset);
 }
 off_t wfm_lseek(int fd, off_t offset, int whence) {
+  if(usbntfs_fd(fd))return usbntfs_seek(fd,offset,whence);
   if(net_fd(fd))return net_lseek(fd,offset,whence);
   if(!wfm_fd_remote(fd)) return lseek(fd, offset, whence);
   smb_lock();
@@ -438,6 +459,7 @@ done:
   return (off_t)result;
 }
 int wfm_fsync(int fd) {
+  if(usbntfs_fd(fd))return usbntfs_sync(fd);
   if(net_fd(fd))return net_fsync(fd);
   if(!wfm_fd_remote(fd)) return fsync(fd);
   smb_lock();
@@ -459,18 +481,25 @@ static int remote_path_operation(const char *path, path_operation_t operation) {
   return result;
 }
 int wfm_mkdir(const char *path, mode_t mode) {
+  if(usbntfs_path(path))return usbntfs_mkdir(path);
   if(net_path(path))return net_mkdir(path);
   return smb_path(path) ? remote_path_operation(path, smb2_mkdir) : mkdir(path, mode);
 }
 int wfm_rmdir(const char *path) {
+  if(usbntfs_path(path))return usbntfs_remove(path,1);
   if(net_path(path))return net_remove(path,1);
   return smb_path(path) ? remote_path_operation(path, smb2_rmdir) : rmdir(path);
 }
 int wfm_unlink(const char *path) {
+  if(usbntfs_path(path))return usbntfs_remove(path,0);
   if(net_path(path))return net_remove(path,0);
   return smb_path(path) ? remote_path_operation(path, smb2_unlink) : unlink(path);
 }
 int wfm_rename(const char *src, const char *dst) {
+  if(usbntfs_path(src) || usbntfs_path(dst)) {
+    if(!usbntfs_path(src) || !usbntfs_path(dst)) { errno=EXDEV; return -1; }
+    return usbntfs_rename(src,dst);
+  }
   if(net_path(src) || net_path(dst))return net_rename(src,dst);
   if(!smb_path(src) && !smb_path(dst)) return rename(src, dst);
   if(!smb_path(src) || !smb_path(dst)) { errno = EXDEV; return -1; }
@@ -489,17 +518,20 @@ int wfm_rename(const char *src, const char *dst) {
   return result;
 }
 int wfm_access(const char *path, int mode) {
+  if(usbntfs_path(path))return usbntfs_access(path,mode);
   if(net_path(path)) { struct stat st; return net_stat(path,&st); }
   if(!smb_path(path)) return access(path, mode);
   struct stat st;
   return wfm_stat(path, &st);
 }
 int wfm_chmod(const char *path, mode_t mode) {
+  if(usbntfs_path(path)) { errno=ENOTSUP; return -1; }
   if(net_path(path)) { errno=ENOTSUP; return -1; }
   if(!smb_path(path)) return chmod(path, mode);
   errno = ENOTSUP; return -1;
 }
 int wfm_fchmod(int fd, mode_t mode) {
+  if(usbntfs_fd(fd)) { errno=ENOTSUP; return -1; }
   if(!wfm_fd_remote(fd)) return fchmod(fd, mode);
   errno = ENOTSUP; return -1;
 }

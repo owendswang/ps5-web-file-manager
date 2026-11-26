@@ -1,8 +1,10 @@
 #include <signal.h>
 #include <errno.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include <arpa/inet.h>
 #include <microhttpd.h>
@@ -15,6 +17,7 @@
 #include "filemgr.h"
 #include "websrv.h"
 #include "transfer.h"
+#include "ntfs.h"
 #ifdef __SCE__
 #include "app_installer.h"
 #endif
@@ -93,6 +96,7 @@ websrv_on_request(void *cls, struct MHD_Connection *conn, const char *url,
   request_context_t *ctx = *con_cls;
   (void)cls;
   (void)version;
+  usbntfs_clear_error();
 
   if(strcmp(method, MHD_HTTP_METHOD_GET) &&
      strcmp(method, MHD_HTTP_METHOD_POST) &&
@@ -257,7 +261,18 @@ websrv_listen(unsigned short port) {
     return -1;
   }
 
+  struct pollfd listener = {.fd = srvfd, .events = POLLIN};
+  time_t last_cleanup = time(NULL);
   while(!g_stop_requested) {
+    int ready = poll(&listener, 1, 5000);
+    if(ready < 0 && errno != EINTR) break;
+    if(g_stop_requested) break;
+    time_t now = time(NULL);
+    if(now - last_cleanup >= 5) {
+      usbntfs_reap_idle();
+      last_cleanup = now;
+    }
+    if(ready <= 0) continue;
     addr_len = sizeof(client_addr);
     if((connfd = accept(srvfd, (struct sockaddr *)&client_addr, &addr_len)) < 0) {
 #if WFM_DEBUG

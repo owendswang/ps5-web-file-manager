@@ -20,6 +20,7 @@
 #include "path_util.h"
 #include "smb.h"
 #include "remote.h"
+#include "ntfs.h"
 #include "vfs.h"
 
 int
@@ -40,7 +41,7 @@ fs_type_has_unix_modes(const char *type) {
 
 static int
 path_has_unix_modes(const char *path) {
-  if(remote_path(path)) return 0;
+  if(remote_path(path) || usbntfs_path(path)) return 0;
 #ifdef __linux__
   (void)path;
   return 1;
@@ -72,7 +73,7 @@ fd_has_unix_modes(int fd) {
 
 int
 chmod_path_mode(const char *path, unsigned int mode) {
-  if(remote_path(path)) { errno = ENOTSUP; return -1; }
+  if(remote_path(path) || usbntfs_path(path)) { errno = ENOTSUP; return -1; }
   if(!path_has_unix_modes(path)) {
     return 0;
   }
@@ -240,6 +241,7 @@ int
 mode_access(const char *path, int mode) {
   struct stat st;
 
+  if(usbntfs_path(path)) return usbntfs_access(path, mode);
   return stat(path, &st) ? -1 : mode_access_stat(&st, mode);
 }
 

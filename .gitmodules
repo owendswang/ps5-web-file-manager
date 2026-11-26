@@ -10,3 +10,6 @@
 [submodule "vendor/curl"]
 	path = vendor/curl
 	url = https://github.com/curl/curl.git
+[submodule "vendor/ntfs-3g"]
+	path = vendor/ntfs-3g
+	url = https://github.com/tuxera/ntfs-3g.git

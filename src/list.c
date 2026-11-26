@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include "json_util.h"
+#include "ntfs.h"
 #include "path_util.h"
 #include "vfs.h"
 
@@ -86,6 +87,10 @@ api_list(struct MHD_Connection *conn) {
     return send_json_error(conn, MHD_HTTP_INTERNAL_SERVER_ERROR, NULL);
   }
   closedir(dir);
+  if(usbntfs_path(path)) {
+    struct statvfs space;
+    statvfs(path, &space);
+  }
   free(path);
   strbuf_append(&b, "]}");
   return send_buffer(conn, MHD_HTTP_OK, b.data, "application/json");

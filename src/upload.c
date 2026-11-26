@@ -12,6 +12,7 @@
 
 #include "filemgr_internal.h"
 #include "json_util.h"
+#include "ntfs.h"
 #include "path_util.h"
 #include "vfs.h"
 #include "transfer.h"
@@ -41,6 +42,7 @@ typedef struct upload_context {
   int error;
   int task_done;
   const char *stage;
+  const char *ntfs_error;
   char error_message[256];
 } upload_context_t;
 
@@ -159,7 +161,7 @@ upload_flush(upload_context_t *ctx) {
 /* Caller holds g_tasks_lock, including when the last file completes. */
 static void
 finish_upload_task_locked(file_task_t *task, task_state_t state, const char *current,
-                          const char *error) {
+                          const char *error, const char *error_code) {
   if(!task) {
     return;
   }
@@ -179,7 +181,8 @@ finish_upload_task_locked(file_task_t *task, task_state_t state, const char *cur
       snprintf(task->error, sizeof(task->error), "%s", error);
     }
     if(state == TASK_FAILED) {
-      snprintf(task->error_code, sizeof(task->error_code), "upload_failed");
+      snprintf(task->error_code, sizeof(task->error_code), "%s",
+               error_code ? error_code : "upload_failed");
       snprintf(task->error_arg, sizeof(task->error_arg), "%s",
                current ? current : task->src);
     }
@@ -189,6 +192,7 @@ finish_upload_task_locked(file_task_t *task, task_state_t state, const char *cur
 
 static void
 finish_upload_context_error(upload_context_t *ctx) {
+  if(!ctx->ntfs_error) ctx->ntfs_error = usbntfs_error();
   /* No worker may update task progress after a terminal error is published. */
   upload_writer_stop(ctx, 0);
   if(!ctx->task || ctx->task_done) {
@@ -199,7 +203,8 @@ finish_upload_context_error(upload_context_t *ctx) {
   finish_upload_task_locked(ctx->task,
                      ctx->error == ECANCELED ? TASK_CANCELED : TASK_FAILED,
                      ctx->target[0] ? ctx->target : ctx->task->current,
-                     ctx->error == ECANCELED ? "canceled" : ctx->error_message);
+                     ctx->error == ECANCELED ? "canceled" : ctx->error_message,
+                     ctx->ntfs_error);
   pthread_mutex_unlock(&g_tasks_lock);
   ctx->task_done = 1;
 }
@@ -331,6 +336,12 @@ api_upload_prepare(struct MHD_Connection *conn, const char *body,
   }
   pthread_mutex_unlock(&g_tasks_lock);
 
+  if(usbntfs_path(path) && usbntfs_access(path, W_OK)) {
+    free_task(task);
+    free(path); free(src); free(total_text); free(count_text);
+    free(rels); free(sizes); free(overwrite);
+    return send_json_error(conn, MHD_HTTP_FORBIDDEN, NULL);
+  }
   if(check_upload_manifest_space(path, rels, sizes, total, error, sizeof(error),
                                  code, sizeof(code), arg, sizeof(arg))) {
     free_task(task);
@@ -381,7 +392,7 @@ api_upload_finish(struct MHD_Connection *conn) {
   file_task_t *task = upload_task_from_conn_locked(conn);
   if(task && task_is_active(task) && task->cancel_requested) {
     finish_upload_task_locked(task, TASK_CANCELED,
-                             task->current[0] ? task->current : task->src, "canceled");
+                             task->current[0] ? task->current : task->src, "canceled", NULL);
   }
   unsigned int status = !task ? MHD_HTTP_NOT_FOUND :
                         task->state == TASK_DONE ? MHD_HTTP_OK : MHD_HTTP_CONFLICT;
@@ -572,7 +583,8 @@ filemgr_upload_finish(struct MHD_Connection *conn, void *upload_ctx) {
                                   errno == ENOSPC ? MHD_HTTP_INSUFFICIENT_STORAGE :
                                   MHD_HTTP_INTERNAL_SERVER_ERROR,
                                   ctx->error == ECANCELED ? "canceled" : ctx->error_message,
-                                  ctx->error == ECANCELED ? NULL : "upload_failed",
+                                  ctx->error == ECANCELED ? NULL :
+                                  ctx->ntfs_error ? ctx->ntfs_error : "upload_failed",
                                   ctx->target[0] ? ctx->target : NULL);
   }
   ctx->stage = "writing file";
@@ -621,7 +633,7 @@ filemgr_upload_finish(struct MHD_Connection *conn, void *upload_ctx) {
     pthread_mutex_lock(&g_tasks_lock);
     ctx->task->upload_completed++;
     if(ctx->task->upload_completed == ctx->task->src_count && !ctx->task->cancel_requested) {
-      finish_upload_task_locked(ctx->task, TASK_DONE, ctx->target, NULL);
+      finish_upload_task_locked(ctx->task, TASK_DONE, ctx->target, NULL, NULL);
     }
     pthread_mutex_unlock(&g_tasks_lock);
   }
@@ -644,7 +656,8 @@ done:
                                   errno == ECANCELED ? MHD_HTTP_CONFLICT :
                                   MHD_HTTP_INTERNAL_SERVER_ERROR,
                                   ctx->error == ECANCELED ? "canceled" : ctx->error_message,
-                                  ctx->error == ECANCELED ? NULL : "upload_failed",
+                                  ctx->error == ECANCELED ? NULL :
+                                  ctx->ntfs_error ? ctx->ntfs_error : "upload_failed",
                                   ctx->target[0] ? ctx->target : NULL);
   }
   return send_json_ok(conn);
@@ -668,7 +681,7 @@ filemgr_upload_free(void *upload_ctx) {
       pthread_mutex_lock(&g_tasks_lock);
       finish_upload_task_locked(ctx->task, canceled ? TASK_CANCELED : TASK_FAILED,
                          ctx->target[0] ? ctx->target : ctx->task->current,
-                         canceled ? "canceled" : "client disconnected");
+                         canceled ? "canceled" : "client disconnected", NULL);
       pthread_mutex_unlock(&g_tasks_lock);
       ctx->task_done = 1;
     }
