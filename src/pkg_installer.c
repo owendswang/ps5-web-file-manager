@@ -10,9 +10,6 @@
 #include <string.h>
 #include <time.h>
 
-#include "smb.h"
-#include "remote.h"
-#include "ntfs.h"
 #include "websrv.h"
 #include "pkg_info.h"
 #include "path_util.h"
@@ -158,11 +155,10 @@ pkg_installer_install(const char *path) {
   pkg_info_t pkg_info = {0};
   playgo_info_t playgo_info = {0};
   int result;
-  int remote;
   char file_name[PATH_MAX];
 
   if(!path) return -1;
-  remote = remote_path(path) || usbntfs_path(path);
+  int stream_package = wfm_path_virtual(path);
   pkg_read_details(path, &details);
   path_basename_copy(path, file_name, sizeof(file_name));
   metadata.content_name = details.title[0] ? details.title : file_name;
@@ -172,7 +168,7 @@ pkg_installer_install(const char *path) {
           details.platform == 5 ? "PS5" : details.platform == 4 ? "PS4" : "unknown",
           details.content_id, metadata.content_name, details.has_icon);
 #endif
-  if(remote || details.has_icon) {
+  if(stream_package || details.has_icon) {
     unsigned short port = websrv_port();
     struct timespec now;
     struct stat st;
@@ -193,7 +189,7 @@ pkg_installer_install(const char *path) {
              (unsigned long)now.tv_nsec, ++serial);
     source->next = sources; sources = source;
     pthread_mutex_unlock(&sources_lock);
-    if(remote) {
+    if(stream_package) {
       snprintf(install_path, sizeof(install_path), "http://127.0.0.1:%u/pkg-source/%s.pkg", port, source->name);
       uri = install_path;
     }
@@ -202,7 +198,7 @@ pkg_installer_install(const char *path) {
       metadata.icon_url = icon_url;
     }
   }
-  if(!remote && !strncmp(path, "/data/", 6)) {
+  if(!stream_package && !strncmp(path, "/data/", 6)) {
     snprintf(install_path, sizeof(install_path), "/user%s", path);
     uri = install_path;
   }

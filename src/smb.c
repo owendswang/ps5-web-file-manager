@@ -673,6 +673,48 @@ enum MHD_Result api_smb_remove(struct MHD_Connection *conn, const char *body, si
   return send_buffer(conn, MHD_HTTP_OK, strdup("{\"ok\":true}"), "application/json");
 }
 
+static int can_probe_remote(const saved_smb_t *saved) {
+  const char *user = saved->address.user;
+  return saved->authenticated || !user[0] || !strcasecmp(user, "Guest") || !strcasecmp(user, "anonymous");
+}
+
+static void refresh_saved_space(saved_smb_t *saved) {
+  if(saved->address.path[0] == '/') {
+    local_space(saved);
+  } else if(net_path(saved->address.path)) {
+    struct statvfs vfs;
+    saved->available=net_probe(&saved->address,&vfs)?0:vfs.f_frsize?1:-1;
+    if(saved->available==1) {
+      saved->free_bytes=(unsigned long long)vfs.f_bavail*vfs.f_frsize;
+      saved->total_bytes=(unsigned long long)vfs.f_blocks*vfs.f_frsize;
+    }
+  } else {
+    smb_lock();
+    struct smb2_context *ctx = connect_address(&saved->address);
+    struct smb2_statvfs vfs;
+    saved->available = ctx ? (!smb2_statvfs(ctx, saved->address.relative, &vfs) ? 1 : -1) : 0;
+    if(saved->available == 1) {
+      unsigned long long block = vfs.f_frsize ? vfs.f_frsize : vfs.f_bsize;
+      saved->free_bytes = vfs.f_bavail * block;
+      saved->total_bytes = vfs.f_blocks * block;
+    }
+    if(ctx) smb2_destroy_context(ctx);
+    smb_unlock();
+  }
+  pthread_mutex_lock(&config_mutex);
+  size_t i = connection_index(saved->address.path);
+  if(i < connection_count &&
+     !strcmp(saved->address.user, connections[i].address.user) &&
+     !strcmp(saved->address.domain, connections[i].address.domain) &&
+     !strcmp(saved->address.password, connections[i].address.password)) {
+    connections[i].available = saved->available;
+    connections[i].checked_at = time(NULL);
+    connections[i].free_bytes = saved->free_bytes;
+    connections[i].total_bytes = saved->total_bytes;
+  }
+  pthread_mutex_unlock(&config_mutex);
+}
+
 static void *refresh_spaces(void *current) {
   pthread_mutex_lock(&config_mutex);
   size_t count = connection_count;
@@ -682,45 +724,9 @@ static void *refresh_spaces(void *current) {
   for(size_t i = 0; snapshot && i < count; i++) {
     saved_smb_t *saved = &snapshot[i];
     if(usbntfs_path(saved->address.path)) continue;
-    if(remote_path(saved->address.path) && (strcmp(saved->address.path, current) ||
-       (!saved->authenticated && saved->address.user[0] && strcasecmp(saved->address.user, "Guest") &&
-        strcasecmp(saved->address.user, "anonymous")))) continue;
-    if(time(NULL) - saved->checked_at >= 30 && !has_active_task()) {
-      if(saved->address.path[0] == '/') {
-        local_space(saved);
-      } else if(net_path(saved->address.path)) {
-        struct statvfs vfs;
-        saved->available=net_probe(&saved->address,&vfs)?0:vfs.f_frsize?1:-1;
-        if(saved->available==1) {
-          saved->free_bytes=(unsigned long long)vfs.f_bavail*vfs.f_frsize;
-          saved->total_bytes=(unsigned long long)vfs.f_blocks*vfs.f_frsize;
-        }
-      } else {
-        smb_lock();
-        struct smb2_context *ctx = connect_address(&saved->address);
-        struct smb2_statvfs vfs;
-        saved->available = ctx ? (!smb2_statvfs(ctx, saved->address.relative, &vfs) ? 1 : -1) : 0;
-        if(saved->available == 1) {
-          unsigned long long block = vfs.f_frsize ? vfs.f_frsize : vfs.f_bsize;
-          saved->free_bytes = vfs.f_bavail * block;
-          saved->total_bytes = vfs.f_blocks * block;
-        }
-        if(ctx) smb2_destroy_context(ctx);
-        smb_unlock();
-      }
-      saved->checked_at = time(NULL);
-      pthread_mutex_lock(&config_mutex);
-      if(i < connection_count && !strcmp(saved->address.path, connections[i].address.path) &&
-         !strcmp(saved->address.user, connections[i].address.user) &&
-         !strcmp(saved->address.domain, connections[i].address.domain) &&
-         !strcmp(saved->address.password, connections[i].address.password)) {
-        connections[i].available = saved->available;
-        connections[i].checked_at = saved->checked_at;
-        connections[i].free_bytes = saved->free_bytes;
-        connections[i].total_bytes = saved->total_bytes;
-      }
-      pthread_mutex_unlock(&config_mutex);
-    }
+    if(remote_path(saved->address.path) &&
+       (strcmp(saved->address.path, current) || !can_probe_remote(saved))) continue;
+    if(time(NULL) - saved->checked_at >= 30 && !has_active_task()) refresh_saved_space(saved);
   }
   free(snapshot);
   free(current);
@@ -730,22 +736,39 @@ static void *refresh_spaces(void *current) {
   return NULL;
 }
 
-void smb_append_spaces(strbuf_t *json, const char *current, int *first) {
-  pthread_once(&config_once, load_config);
-  pthread_mutex_lock(&config_mutex);
+static size_t current_space_index(const char *current) {
   size_t current_index = connection_count, current_length = 0;
-  int stale = 0;
   for(size_t i = 0; i < connection_count; i++) {
     size_t len = strlen(connections[i].address.path);
     if(len > current_length && smb_path_current(current, connections[i].address.path)) {
       current_length = len;
       current_index = i;
     }
-    if(connections[i].address.path[0] == '/' && !usbntfs_path(connections[i].address.path) &&
-       time(NULL) - connections[i].checked_at >= 30) stale = 1;
   }
-  if(current_index < connection_count && !usbntfs_path(connections[current_index].address.path) &&
-     time(NULL) - connections[current_index].checked_at >= 30) stale = 1;
+  return current_index;
+}
+
+void smb_append_spaces(strbuf_t *json, const char *current, int *first, int refresh) {
+  pthread_once(&config_once, load_config);
+  pthread_mutex_lock(&config_mutex);
+  size_t current_index = current_space_index(current);
+  if(refresh && current_index < connection_count && remote_path(connections[current_index].address.path) &&
+     can_probe_remote(&connections[current_index])) {
+    saved_smb_t saved = connections[current_index];
+    pthread_mutex_unlock(&config_mutex);
+    if(!has_active_task()) refresh_saved_space(&saved);
+    pthread_mutex_lock(&config_mutex);
+    current_index = current_space_index(current);
+  }
+  int stale = 0;
+  if(!refresh) {
+    for(size_t i = 0; i < connection_count; i++) {
+      if(connections[i].address.path[0] == '/' && !usbntfs_path(connections[i].address.path) &&
+         time(NULL) - connections[i].checked_at >= 30) stale = 1;
+    }
+    if(current_index < connection_count && !usbntfs_path(connections[current_index].address.path) &&
+       time(NULL) - connections[current_index].checked_at >= 30) stale = 1;
+  }
   /* Offline servers must not delay returning the shared disk list. */
   if(stale && !refreshing_spaces) {
     pthread_t thread;

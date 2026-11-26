@@ -11,6 +11,8 @@
 #include <unistd.h>
 
 typedef struct wfm_dir wfm_dir_t;
+/* WFM-managed paths that system processes cannot open directly. */
+int wfm_path_virtual(const char *path);
 int wfm_stat(const char *path, struct stat *st);
 int wfm_lstat(const char *path, struct stat *st);
 int wfm_fstat(int fd, struct stat *st);

@@ -96,6 +96,7 @@ window.WFM_LANG = {
   disks: "存储",
   diskSpace: "{name}（可用 {free} / {total}）",
   diskUnavailable: "{name}（不可用）",
+  diskSpacePending: "{name}（容量待更新）",
   diskSpaceUnknown: "{name}（容量待更新）",
   remoteCapacityUnknown: "{name}（容量未知）",
   err_remote_password_required: "服务器拒绝访问，请检查目录、权限和账号密码：协议://用户名:密码@服务器/路径。",

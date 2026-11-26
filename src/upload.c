@@ -573,20 +573,8 @@ filemgr_upload_finish(struct MHD_Connection *conn, void *upload_ctx) {
   if(!ctx) {
     return send_json_error(conn, MHD_HTTP_BAD_REQUEST, "invalid path");
   }
-  if(ctx->failed) {
-    finish_upload_context_error(ctx);
-    errno = ctx->error ? ctx->error : EIO;
-    return send_json_error_detail(conn,
-                                  errno == EEXIST ? MHD_HTTP_CONFLICT :
-                                  errno == EBUSY ? MHD_HTTP_CONFLICT :
-                                  errno == ECANCELED ? MHD_HTTP_CONFLICT :
-                                  errno == ENOSPC ? MHD_HTTP_INSUFFICIENT_STORAGE :
-                                  MHD_HTTP_INTERNAL_SERVER_ERROR,
-                                  ctx->error == ECANCELED ? "canceled" : ctx->error_message,
-                                  ctx->error == ECANCELED ? NULL :
-                                  ctx->ntfs_error ? ctx->ntfs_error : "upload_failed",
-                                  ctx->target[0] ? ctx->target : NULL);
-  }
+  int already_failed = ctx->failed;
+  if(already_failed) goto report_error;
   ctx->stage = "writing file";
   if(ctx->buffered && upload_flush(ctx)) {
     ctx->error = ctx->error ? ctx->error : EIO;
@@ -640,27 +628,34 @@ filemgr_upload_finish(struct MHD_Connection *conn, void *upload_ctx) {
   ret = 0;
 
 done:
+  if(ret && !ctx->ntfs_error) ctx->ntfs_error = usbntfs_error();
   upload_writer_stop(ctx, 0);
   if(ctx->fd >= 0) {
     close(ctx->fd);
     ctx->fd = -1;
   }
-  if(ret) {
-    upload_error_message(ctx);
-    if(ctx->temp[0]) {
-      unlink(ctx->temp);
-    }
-    finish_upload_context_error(ctx);
-    errno = ctx->error ? ctx->error : EIO;
-    return send_json_error_detail(conn,
-                                  errno == ECANCELED ? MHD_HTTP_CONFLICT :
-                                  MHD_HTTP_INTERNAL_SERVER_ERROR,
-                                  ctx->error == ECANCELED ? "canceled" : ctx->error_message,
-                                  ctx->error == ECANCELED ? NULL :
-                                  ctx->ntfs_error ? ctx->ntfs_error : "upload_failed",
-                                  ctx->target[0] ? ctx->target : NULL);
+  if(!ret) return send_json_ok(conn);
+  upload_error_message(ctx);
+  if(ctx->temp[0]) {
+    unlink(ctx->temp);
   }
-  return send_json_ok(conn);
+  usbntfs_clear_error();
+
+report_error:
+  finish_upload_context_error(ctx);
+  /* Use this upload's saved error even if teardown touched the disk. */
+  usbntfs_clear_error();
+  errno = ctx->error ? ctx->error : EIO;
+  int canceled = errno == ECANCELED;
+  unsigned int status = MHD_HTTP_INTERNAL_SERVER_ERROR;
+  if(canceled || (already_failed && (errno == EEXIST || errno == EBUSY))) {
+    status = MHD_HTTP_CONFLICT;
+  } else if(already_failed && errno == ENOSPC) {
+    status = MHD_HTTP_INSUFFICIENT_STORAGE;
+  }
+  const char *code = ctx->ntfs_error ? ctx->ntfs_error : "upload_failed";
+  return send_json_error_detail(conn, status, canceled ? "canceled" : ctx->error_message,
+                                canceled ? NULL : code, ctx->target[0] ? ctx->target : NULL);
 }
 
 void

@@ -274,7 +274,8 @@ send_json_error(struct MHD_Connection *conn, unsigned int status,
 enum MHD_Result
 send_json_error_detail(struct MHD_Connection *conn, unsigned int status,
                        const char *msg, const char *code, const char *arg) {
-  if(usbntfs_error())code=usbntfs_error();
+  const char *ntfs_code = usbntfs_error();
+  if(ntfs_code) code = ntfs_code;
   strbuf_t b = {0};
   const char *fallback = msg ? msg : strerror(errno);
 
@@ -1856,7 +1857,7 @@ api_extract(struct MHD_Connection *conn, const char *body, size_t body_size) {
   }
   separate = !strcmp(separate_text, "1");
   overwrite = overwrite_text && !strcmp(overwrite_text, "1");
-  if(remote_path(destination) || usbntfs_path(destination)) {
+  if(wfm_path_virtual(destination)) {
     result = send_json_error(conn, MHD_HTTP_BAD_REQUEST,
                              "archive extraction requires local storage");
     goto done;
@@ -1884,7 +1885,7 @@ api_extract(struct MHD_Connection *conn, const char *body, size_t body_size) {
   for(size_t i = 0; i < count; i++) {
     char target[PATH_MAX];
 
-    if(remote_path(paths[i]) || usbntfs_path(paths[i])) {
+    if(wfm_path_virtual(paths[i])) {
       result = send_json_error(conn, MHD_HTTP_BAD_REQUEST,
                                "copy the archive to local storage first");
       goto done;

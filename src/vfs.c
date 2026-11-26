@@ -46,6 +46,7 @@ struct wfm_dir {
 };
 static wfm_dir_t *remote_dirs;
 
+int wfm_path_virtual(const char *path) { return remote_path(path) || usbntfs_path(path); }
 int wfm_fd_remote(int fd) { return fd >= SMB_FD_BASE; }
 static remote_file_t *remote_file(int fd) {
   if(fd < SMB_FD_BASE || fd - SMB_FD_BASE >= SMB_FD_COUNT ||
@@ -220,7 +221,6 @@ struct dirent *wfm_readdir(wfm_dir_t *dir) {
   return &dir->entry;
 }
 int wfm_dir_error(wfm_dir_t *dir) {
-  if(dir->ntfs) { dir->error=usbntfs_dir_error(dir->ntfs); }
   if(dir->error) errno = dir->error;
   return dir->error;
 }

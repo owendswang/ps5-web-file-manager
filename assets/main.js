@@ -858,10 +858,12 @@ async function refreshSpaces(rescan) {
         item.label_key ? t(item.label_key, { name: item.label || "" }) : displayPath(item.path || item.label);
       const label = remote ? remoteProtocol(item.path) + " " + name : name;
       const readOnlySuffix = item.read_only ? t("diskReadOnly") : "";
+      const unknownCapacity = remote ?
+        (isSmbPath(item.path) ? "diskSpaceUnknown" : "remoteCapacityUnknown") : "diskSpacePending";
       const suffix = item.available === false ?
         t("diskUnavailable", { name: "" }) :
         item.custom && !remote ? "" :
-        item.available === null ? t(isSmbPath(item.path) ? "diskSpaceUnknown" : "remoteCapacityUnknown", { name: "" }) :
+        item.available === null ? t(unknownCapacity, { name: "" }) :
         t("diskSpace", { name: "", free: formatBytes(item.free, false),
           total: formatBytes(item.total, false) });
       option.textContent = label + suffix + readOnlySuffix;
@@ -1028,6 +1030,10 @@ function isRemotePath(path) {
 
 function isNtfsPath(path) {
   return /^\/mnt\/ntfs\d+p\d+(?:\/|$)/.test(path);
+}
+
+function isVirtualStoragePath(path) {
+  return isRemotePath(path) || isNtfsPath(path);
 }
 
 function normalizeRemotePath(path) {
@@ -1629,7 +1635,7 @@ function renderSingleExtractPath() {
 
 function openExtractDialogForItems(items) {
   if (busy || loadingPath || !items.length) return;
-  if (isRemotePath(cwd) || isNtfsPath(cwd) || items.some(item => isRemotePath(item.path) || isNtfsPath(item.path))) {
+  if (isVirtualStoragePath(cwd) || items.some(item => isVirtualStoragePath(item.path))) {
     showActionFailed(t("extract"), t("smbLocalOperation"));
     return;
   }
@@ -1706,7 +1712,7 @@ function submitExtractDialog() {
     destination: useCustom ? extractCustomPathEl.value.trim() : cwd,
     separate: extractSeparateEl.checked || (useCustom && items.length > 1) ? "1" : "0"
   };
-  if (isRemotePath(request.destination) || isNtfsPath(request.destination)) {
+  if (isVirtualStoragePath(request.destination)) {
     showActionFailed(t("extract"), t("smbLocalOperation"));
     return;
   }
@@ -2062,8 +2068,9 @@ function updateButtons() {
   uploadFolderEl.disabled = locked;
   document.getElementById("mkdirBtn").disabled = locked;
   newTextBtn.disabled = locked;
+  const virtualStorage = isVirtualStoragePath(cwd);
   for (const button of filesEl.querySelectorAll(".row-action, .mode-action, .row-tool")) {
-    button.disabled = locked || ((isRemotePath(cwd) || isNtfsPath(cwd)) && button.classList.contains("mode-action"));
+    button.disabled = locked || (virtualStorage && button.classList.contains("mode-action"));
   }
   for (const checkbox of filesEl.querySelectorAll(".select-cell input")) checkbox.disabled = locked;
   selectAllEl.disabled = locked;
@@ -2293,11 +2300,12 @@ function render() {
     const modeBtn = document.createElement("button");
     modeBtn.className = "mode-action";
     modeBtn.type = "button";
-    const remote = isRemotePath(item.path) || isNtfsPath(item.path);
-    modeBtn.textContent = remote ? "—" : permissionModeText(item.mode);
-    modeBtn.title = isNtfsPath(item.path) ? t("ntfsPermissions") : remote ? t("smbPermissions") : t("permissionChangeTitle", { name: displayName(item) });
+    const ntfs = isNtfsPath(item.path);
+    const virtualStorage = ntfs || isRemotePath(item.path);
+    modeBtn.textContent = virtualStorage ? "—" : permissionModeText(item.mode);
+    modeBtn.title = ntfs ? t("ntfsPermissions") : virtualStorage ? t("smbPermissions") : t("permissionChangeTitle", { name: displayName(item) });
     modeBtn.setAttribute("aria-label", modeBtn.title);
-    modeBtn.disabled = remote || busy || Boolean(loadingPath);
+    modeBtn.disabled = virtualStorage || busy || Boolean(loadingPath);
     modeBtn.addEventListener("click", event => {
       event.preventDefault();
       event.stopPropagation();
@@ -2818,8 +2826,7 @@ async function pollTasksOnce() {
     if (shouldRefresh) {
       if (taskBecameIdle) startContentLoadingTimer();
       clearSelection(false);
-      await load(taskRefreshPath || cwd, false);
-      await refreshSpaces();
+      if (!await load(taskRefreshPath || cwd, false)) await refreshSpaces();
     }
   } catch (err) {
     const message = t("tasksPollFailed", { error: err.message });
@@ -3528,4 +3535,3 @@ async function init() {
 
 init();
 setInterval(pollTasks, 1000);
-setInterval(refreshSpaces, 10000);

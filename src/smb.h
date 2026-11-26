@@ -27,7 +27,7 @@ void smb_lock(void);
 void smb_unlock(void);
 struct smb2_context *smb_connect_path(const char *path, smb_address_t *address);
 int smb_result(int result);
-void smb_append_spaces(strbuf_t *json, const char *current, int *first);
+void smb_append_spaces(strbuf_t *json, const char *current, int *first, int refresh);
 enum MHD_Result api_smb_shares(struct MHD_Connection *conn, const char *body, size_t size);
 enum MHD_Result api_smb_add(struct MHD_Connection *conn, const char *body,
                             size_t size, int connecting);

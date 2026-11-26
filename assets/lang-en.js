@@ -96,6 +96,7 @@ window.WFM_LANG = {
   disks: "Storage",
   diskSpace: "{name} (Free {free} / {total})",
   diskUnavailable: "{name} (Unavailable)",
+  diskSpacePending: "{name} (Capacity pending)",
   diskSpaceUnknown: "{name} (Capacity unavailable)",
   remoteCapacityUnknown: "{name} (Capacity unknown)",
   err_remote_password_required: "Access denied. Check the folder, its permissions and the username/password in scheme://user:password@host/path.",

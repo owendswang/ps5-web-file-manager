@@ -76,6 +76,7 @@ static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static time_t scanned;
 static _Thread_local const char *last_error;
 static int cleanup_registered;
+static void usbntfs_shutdown(void);
 
 const char *usbntfs_error(void) { return last_error; }
 void usbntfs_clear_error(void) { last_error = NULL; }
@@ -98,6 +99,12 @@ static uint64_t le64_at(const unsigned char *p) { return le32_at(p) | (uint64_t)
 static int same_device(const struct stat *a,const struct stat *b) {
   return a->st_mode==b->st_mode && a->st_dev==b->st_dev &&
     a->st_ino==b->st_ino && a->st_rdev==b->st_rdev;
+}
+
+static void forget_volume_state(usb_volume_t *v) {
+  v->space_known=0;
+  v->write_checked=0;
+  v->read_only_code=NULL;
 }
 
 static void remember_capacity(usb_volume_t *v) {
@@ -233,31 +240,31 @@ static void add_partition(const char *device,unsigned disk,unsigned part,
   if(i==volume_count) {
     volume_count++;
     snprintf(volumes[i].root,sizeof(volumes[i].root),"%s",root);
-    snprintf(volumes[i].device,sizeof(volumes[i].device),"%s",device);
     volumes[i].fd=-1;
   }
   usb_volume_t *v=&volumes[i];
   uint64_t serial=le64_at(boot+72);
-  if(v->volume && (v->offset!=offset || v->length!=length || v->serial!=serial || strcmp(v->device,device))) {
+  if(v->offset!=offset || v->length!=length || v->serial!=serial || strcmp(v->device,device)) {
     if(v->refs)return;
     close_volume(v);
-  }
-  if(v->offset!=offset || v->length!=length || v->serial!=serial || strcmp(v->device,device)) {
-    v->space_known=0;
-    v->write_checked=0;
-    v->read_only_code=NULL;
+    forget_volume_state(v);
   }
   snprintf(v->device,sizeof(v->device),"%s",device);
   v->offset=offset; v->length=length; v->serial=serial; v->sector=sector; v->disk=disk; v->present=1;
   v->format_error=!memcmp(boot+3,"NTFS    ",8)?NULL:
     !memcmp(boot+3,"-FVE-FS-",8)?"ntfs_encrypted":"ntfs_format_unsupported";
 }
+
+/* FAT/exFAT storage remains entirely with the system driver. */
+static int is_native_fat(const unsigned char *boot) {
+  return !memcmp(boot+3,"EXFAT   ",8) || !memcmp(boot+54,"FAT",3) || !memcmp(boot+82,"FAT",3);
+}
+
 static void probe_partition(usb_volume_t *disk,unsigned index,unsigned part,uint64_t start,uint64_t length) {
   unsigned char boot[512];
   if(start>disk->length || length>disk->length-start || length<512)return;
   if(device_io(disk,boot,sizeof(boot),start,0)<0)return;
-  /* Native FAT/exFAT storage remains entirely with the system driver. */
-  if(!memcmp(boot+3,"EXFAT   ",8) || !memcmp(boot+54,"FAT",3) || !memcmp(boot+82,"FAT",3))return;
+  if(is_native_fat(boot))return;
   add_partition(disk->device,index,part,disk->sector,start,length,boot);
 }
 static void scan_extended(usb_volume_t *disk,unsigned index,uint64_t base,uint64_t length) {
@@ -298,12 +305,11 @@ static void scan_device(const char *path,unsigned index) {
   if(disk.sector<512 || disk.sector>4096 || (disk.sector&(disk.sector-1)) || disk.length>INT64_MAX)goto done;
   unsigned char block[4096];
   if(device_io(&disk,block,512,0,0)<0)goto done;
-  if(!memcmp(block+3,"EXFAT   ",8) || !memcmp(block+54,"FAT",3) || !memcmp(block+82,"FAT",3))goto done;
-  if(!memcmp(block+3,"NTFS    ",8) || !memcmp(block+3,"-FVE-FS-",8)) {
-    probe_partition(&disk,index,0,0,disk.length); goto done;
-  }
-  if(block[510]!=0x55 || block[511]!=0xaa) {
-    probe_partition(&disk,index,0,0,disk.length); goto done;
+  if(is_native_fat(block))goto done;
+  if(!memcmp(block+3,"NTFS    ",8) || !memcmp(block+3,"-FVE-FS-",8) ||
+     block[510]!=0x55 || block[511]!=0xaa) {
+    add_partition(path,index,0,disk.sector,0,disk.length,block);
+    goto done;
   }
   int gpt=0;
   for(unsigned p=0;p<4;p++)if(block[446+p*16+4]==0xee)gpt=1;
@@ -352,10 +358,8 @@ static void check_device(const char *path,unsigned disk,int force) {
     if(v->refs)busy=1;
     if(changed) {
       v->present=0;
-      v->space_known=0;
       if(!v->refs)close_volume(v);
-      v->write_checked=0;
-      v->read_only_code=NULL;
+      forget_volume_state(v);
     }
   }
   /* Keep old descriptors bound to their original volume until they close. */
@@ -404,14 +408,14 @@ static ntfs_volume *inspect_volume(usb_volume_t *v) {
   ntfs_log_set_handler(ntfs_log_handler_null);
 #endif
   ntfs_volume *volume=mount_volume(v,NTFS_MNT_RDONLY|NTFS_MNT_FORENSIC);
-  v->write_checked=volume!=NULL;
+  /* A failed probe is cached too. Opening the volume still retries the check. */
+  v->write_checked=1;
   v->read_only_code=NULL;
-  if(volume) {
-    if(volume->flags&VOLUME_IS_DIRTY) {
-      v->read_only_code="ntfs_readonly_dirty";
-    } else if(ntfs_volume_check_hiberfile(volume,0)<0 || ntfs_volume_check_logfile(volume)<0) {
-      v->read_only_code="ntfs_readonly_unsafe";
-    }
+  if(!volume)return NULL;
+  if(volume->flags&VOLUME_IS_DIRTY) {
+    v->read_only_code="ntfs_readonly_dirty";
+  } else if(ntfs_volume_check_hiberfile(volume,0)<0 || ntfs_volume_check_logfile(volume)<0) {
+    v->read_only_code="ntfs_readonly_unsafe";
   }
   return volume;
 }
@@ -440,37 +444,34 @@ int usbntfs_present(const char *path) {
 static usb_volume_t *get_volume(const char *path,const char **relative) {
   scan_locked(0);
   usb_volume_t *v=find_volume(path);
-  if(v) {
-    if(!v->present) { fail("ntfs_disconnected",ENODEV); return NULL; }
-    if(v->format_error) { fail(v->format_error,EOPNOTSUPP); return NULL; }
-    v->used=time(NULL);
-    const char *rel=path+strlen(v->root);
-    if(rel[0] && rel[1] && !relative_path_safe(rel+1)) { errno=EINVAL; return NULL; }
-    *relative=*rel?rel:"/";
-    if(v->volume)return v;
-    /* Inspect with O_RDONLY first: a writable mount can update metadata. */
-    v->volume=inspect_volume(v);
-    if(!v->volume) {
-      int error=errno;
-      fail(error==ENODEV || error==ENOENT?"ntfs_disconnected":
-           error==EPERM || error==EACCES?"ntfs_unclean":
-           error==EOPNOTSUPP?"ntfs_unsupported":"ntfs_invalid",error);
-      return NULL;
-    }
-    if(!v->read_only_code) {
-      ntfs_umount(v->volume,FALSE); v->volume=NULL;
-      /* No RECOVER or IGNORE_HIBERFILE; retain upstream's final checks. */
-      v->volume=mount_volume(v,NTFS_MNT_NONE);
-      if(!v->volume)v->volume=mount_volume(v,NTFS_MNT_RDONLY|NTFS_MNT_FORENSIC);
-      if(!v->volume) { v->write_checked=0; fail("ntfs_invalid",errno); return NULL; }
-      if(NVolReadOnly(v->volume))v->read_only_code="ntfs_readonly";
-    }
-    ntfs_create_lru_caches(v->volume);
-    NVolSetCompression(v->volume);
-    ntfs_set_shown_files(v->volume,FALSE,TRUE,FALSE);
-    return v;
+  if(!v || !v->present) { fail("ntfs_disconnected",ENODEV); return NULL; }
+  if(v->format_error) { fail(v->format_error,EOPNOTSUPP); return NULL; }
+  v->used=time(NULL);
+  const char *rel=path+strlen(v->root);
+  if(rel[0] && rel[1] && !relative_path_safe(rel+1)) { errno=EINVAL; return NULL; }
+  *relative=*rel?rel:"/";
+  if(v->volume)return v;
+  /* Inspect with O_RDONLY first: a writable mount can update metadata. */
+  v->volume=inspect_volume(v);
+  if(!v->volume) {
+    int error=errno;
+    fail(error==ENODEV || error==ENOENT?"ntfs_disconnected":
+         error==EPERM || error==EACCES?"ntfs_unclean":
+         error==EOPNOTSUPP?"ntfs_unsupported":"ntfs_invalid",error);
+    return NULL;
   }
-  fail("ntfs_disconnected",ENODEV); return NULL;
+  if(!v->read_only_code) {
+    /* No RECOVER or IGNORE_HIBERFILE; retain upstream's final checks. */
+    ntfs_umount(v->volume,FALSE);
+    v->volume=mount_volume(v,NTFS_MNT_NONE);
+    if(!v->volume)v->volume=mount_volume(v,NTFS_MNT_RDONLY|NTFS_MNT_FORENSIC);
+    if(!v->volume) { fail("ntfs_invalid",errno); return NULL; }
+    if(NVolReadOnly(v->volume))v->read_only_code="ntfs_readonly";
+  }
+  ntfs_create_lru_caches(v->volume);
+  NVolSetCompression(v->volume);
+  ntfs_set_shown_files(v->volume,FALSE,TRUE,FALSE);
+  return v;
 }
 static ntfs_inode *lookup(usb_volume_t *v,const char *relative,int writing) {
   if(writing && require_writable(v))return NULL;
@@ -496,13 +497,20 @@ static void inode_stat(usb_volume_t *v,ntfs_inode *ni,struct stat *st) {
   st->st_mtim=ntfs2timespec(ni->last_data_change_time);
   st->st_ctim=ntfs2timespec(ni->last_mft_change_time);
 }
-int usbntfs_stat(const char *path,struct stat *st) {
+static int stat_path(const char *path,struct stat *st,int writing) {
   pthread_mutex_lock(&lock);
   const char *rel; usb_volume_t *v=get_volume(path,&rel);
   ntfs_inode *ni=v?ntfs_pathname_to_inode(v->volume,NULL,rel):NULL;
   int result=-1;
-  if(ni) { inode_stat(v,ni,st); result=ntfs_inode_close(ni); }
+  if(ni) {
+    if(st)inode_stat(v,ni,st);
+    result=ntfs_inode_close(ni);
+    if(!result && writing)result=require_writable(v);
+  }
   pthread_mutex_unlock(&lock); return result;
+}
+int usbntfs_stat(const char *path,struct stat *st) {
+  return stat_path(path,st,0);
 }
 int usbntfs_statvfs(const char *path,struct statvfs *st) {
   pthread_mutex_lock(&lock);
@@ -587,7 +595,6 @@ struct dirent *usbntfs_readdir(usbntfs_dir_t *dir) {
   dir->entry.d_ino=entry->inode; dir->entry.d_type=entry->type;
   return &dir->entry;
 }
-int usbntfs_dir_error(usbntfs_dir_t *dir) { (void)dir; return 0; }
 int usbntfs_closedir(usbntfs_dir_t *dir) {
   for(size_t i=0;i<dir->count;i++)free(dir->entries[i].name);
   free(dir->entries); free(dir); return 0;
@@ -788,17 +795,9 @@ done:
   pthread_mutex_unlock(&lock); return result;
 }
 int usbntfs_access(const char *path,int mode) {
-  struct stat st;
-  if(usbntfs_stat(path,&st))return -1;
-  if(mode&W_OK) {
-    pthread_mutex_lock(&lock);
-    const char *rel; usb_volume_t *v=get_volume(path,&rel);
-    int result=v?require_writable(v):-1;
-    pthread_mutex_unlock(&lock); return result;
-  }
-  return 0;
+  return stat_path(path,NULL,mode&W_OK);
 }
-void usbntfs_shutdown(void) {
+static void usbntfs_shutdown(void) {
   pthread_mutex_lock(&lock);
   for(size_t i=0;i<NTFS_FILES;i++) {
     usb_file_t *f=&files[i];
