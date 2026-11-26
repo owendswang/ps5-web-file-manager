@@ -37,7 +37,6 @@ struct wfm_dir {
   usbntfs_dir_t *ntfs;
   struct smb2_context *ctx;
   struct smb2dir *remote;
-  struct dirent entry;
   struct smb2dirent *last;
   int error;
   dev_t device;
@@ -196,29 +195,21 @@ wfm_dir_t *wfm_opendir(const char *path) {
   smb_unlock();
   return dir;
 }
-struct dirent *wfm_readdir(wfm_dir_t *dir) {
-  if(dir->ntfs)return usbntfs_readdir(dir->ntfs);
-  if(dir->network)return net_readdir(dir->network);
+const char *wfm_readdir_name(wfm_dir_t *dir) {
+  if(dir->ntfs)return usbntfs_readdir_name(dir->ntfs);
+  if(dir->network)return net_readdir_name(dir->network);
   if(dir->error) { errno = dir->error; return NULL; }
   if(dir->native) {
     errno = 0;
     struct dirent *entry = readdir(dir->native);
     if(!entry) dir->error = errno;
-    return entry;
+    return entry ? entry->d_name : NULL;
   }
   smb_lock();
   dir->last = smb2_readdir(dir->ctx, dir->remote);
-  if(!dir->last) { smb_unlock(); return NULL; }
-  if(strlen(dir->last->name) >= sizeof(dir->entry.d_name)) {
-    dir->last = NULL; dir->error = ENAMETOOLONG;
-    smb_unlock(); errno = dir->error; return NULL;
-  }
-  memset(&dir->entry, 0, sizeof(dir->entry));
-  strcpy(dir->entry.d_name, dir->last->name);
-  dir->entry.d_ino = dir->last->st.smb2_ino;
-  dir->entry.d_type = dir->last->st.smb2_type == SMB2_TYPE_DIRECTORY ? DT_DIR : DT_REG;
+  const char *name = dir->last ? dir->last->name : NULL;
   smb_unlock();
-  return &dir->entry;
+  return name;
 }
 int wfm_dir_error(wfm_dir_t *dir) {
   if(dir->error) errno = dir->error;

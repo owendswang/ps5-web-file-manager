@@ -1,6 +1,5 @@
 #include "filemgr_internal.h"
 
-#include <dirent.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
@@ -29,7 +28,7 @@ enum MHD_Result
 api_list(struct MHD_Connection *conn) {
   char *path = fs_path_value(query_value(conn, "path"));
   DIR *dir;
-  struct dirent *entry;
+  const char *name;
   struct stat st;
   strbuf_t b = {0};
   int first = 1;
@@ -56,13 +55,13 @@ api_list(struct MHD_Connection *conn) {
   json_escape(&b, parent);
   strbuf_append(&b, ",\"entries\":[");
 
-  while((entry = readdir(dir))) {
+  while((name = wfm_readdir_name(dir))) {
     char child[PATH_MAX];
 
-    if(!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+    if(!strcmp(name, ".") || !strcmp(name, "..")) {
       continue;
     }
-    if(path_join(child, sizeof(child), path, entry->d_name) ||
+    if(path_join(child, sizeof(child), path, name) ||
        lstat(child, &st)) {
       continue;
     }
@@ -72,7 +71,7 @@ api_list(struct MHD_Connection *conn) {
     }
     first = 0;
     strbuf_append(&b, "{\"name\":");
-    json_escape(&b, entry->d_name);
+    json_escape(&b, name);
     strbuf_append(&b, ",\"path\":");
     json_escape(&b, child);
     strbuf_printf(&b, ",\"type\":\"%c\",\"mode\":%u,\"size\":%lld,\"mtime\":%lld}",

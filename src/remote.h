@@ -1,6 +1,5 @@
 #pragma once
 
-#include <dirent.h>
 #include <stdint.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
@@ -17,7 +16,7 @@ const char *net_error_detail(void);
 const char *net_error_code(int error);
 typedef struct net_dir net_dir_t;
 net_dir_t *net_opendir(const char *path);
-struct dirent *net_readdir(net_dir_t *dir);
+const char *net_readdir_name(net_dir_t *dir);
 void net_closedir(net_dir_t *dir);
 int net_stat(const char *path, struct stat *st);
 int net_statvfs(const char *path, struct statvfs *st);

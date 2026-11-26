@@ -830,8 +830,10 @@ function fitSpaceOptions() {
 }
 
 async function refreshSpaces(rescan) {
+  const path = cwd;
   try {
-    const data = await api("/api/space", rescan ? { path: cwd, rescan: "1" } : { path: cwd });
+    const data = await api("/api/space", rescan ? { path, rescan: "1" } : { path });
+    if (path !== cwd) return;
     const spaces = data.spaces || [];
     const previousConnections = remoteConnections;
     storagePaths = spaces.filter(item => item.custom || isRemotePath(item.path));
@@ -908,9 +910,10 @@ async function refreshSpaces(rescan) {
       fitSpaceOptions();
     }
     renderAddressPath();
-    if (!spaceNavigationLocked() && previousConnections.some(item => remoteContainsPath(item.path, cwd)) &&
-        !remoteConnections.some(item => remoteContainsPath(item.path, cwd))) {
-      await load("/", undefined, true, true, "replace");
+    if (previousConnections.some(item => remoteContainsPath(item.path, path)) &&
+        !remoteConnections.some(item => remoteContainsPath(item.path, path))) {
+      if (loadingPath) return true;
+      if (!spaceNavigationLocked()) await load("/", undefined, true, true, "replace");
     }
   } catch (err) {
     renderAddressPath();
@@ -1985,6 +1988,11 @@ function renderTaskName(el, task) {
   appendChildren(el, op, subject);
 }
 
+function setActionAvailability(button, locked, unavailable) {
+  button.disabled = locked || unavailable;
+  button.classList.toggle("action-unavailable", unavailable);
+}
+
 function renderClipboard() {
   const hasClipboard = Boolean(clipboard && clipboard.items.length);
   const locked = backgroundInteractionLocked();
@@ -2044,6 +2052,7 @@ function updateButtons() {
   const locked = backgroundInteractionLocked();
   const shell = document.querySelector(".shell");
   shell.classList.toggle("interaction-locked", locked);
+  shell.classList.toggle("quiet-loading", Boolean(loadingPath && contentLoadingEl.hidden && !busy && !modalBackgroundLocked));
   shell.classList.toggle("modal-open", modalBackgroundLocked || !overlayEl.hidden);
   versionEl.disabled = locked;
   manageSmbBtn.disabled = spaceNavigationLocked();
@@ -2055,11 +2064,11 @@ function updateButtons() {
   for (const select of spaceInfoEl.querySelectorAll(".space-select")) {
     select.disabled = spaceNavigationLocked();
   }
-  document.getElementById("copyBtn").disabled = locked || items.length === 0;
-  document.getElementById("moveBtn").disabled = locked || items.length === 0;
-  document.getElementById("renameBtn").disabled = locked || items.length !== 1;
-  document.getElementById("deleteBtn").disabled = locked || items.length === 0;
-  downloadBtn.disabled = locked || items.length === 0;
+  setActionAvailability(document.getElementById("copyBtn"), locked, items.length === 0);
+  setActionAvailability(document.getElementById("moveBtn"), locked, items.length === 0);
+  setActionAvailability(document.getElementById("renameBtn"), locked, items.length !== 1);
+  setActionAvailability(document.getElementById("deleteBtn"), locked, items.length === 0);
+  setActionAvailability(downloadBtn, locked, items.length === 0);
   document.getElementById("refreshBtn").disabled = locked;
   uploadBtn.disabled = locked;
   uploadMenuBtn.disabled = locked;
@@ -2070,12 +2079,13 @@ function updateButtons() {
   newTextBtn.disabled = locked;
   const virtualStorage = isVirtualStoragePath(cwd);
   for (const button of filesEl.querySelectorAll(".row-action, .mode-action, .row-tool")) {
-    button.disabled = locked || (virtualStorage && button.classList.contains("mode-action"));
+    if (button.classList.contains("mode-action")) setActionAvailability(button, locked, virtualStorage);
+    else button.disabled = locked;
   }
   for (const checkbox of filesEl.querySelectorAll(".select-cell input")) checkbox.disabled = locked;
   selectAllEl.disabled = locked;
   nameFilterBtn.disabled = locked;
-  parentBtn.disabled = locked || parentPath(cwd) === cwd;
+  setActionAvailability(parentBtn, locked, parentPath(cwd) === cwd);
   exitBtn.disabled = locked;
   fullscreenBtn.disabled = locked;
   const visibleCount = visibleEntries().length;
@@ -2369,13 +2379,18 @@ function classCell(className, text) {
 async function load(path, scrollTop, force, alertOnError, historyMode, rescan) {
   const shouldScrollTop = scrollTop !== false;
   if ((busy && !force) || loadingPath) return;
+  let storageRemoved;
   loadingPath = path;
   updateButtons();
   startContentLoadingTimer();
   try {
-    setStatus(t("readDir"));
-    const data = await api("/api/list", { path });
-    if (!contentLoadingEl.hidden) await nextPaint();
+    let data;
+    try {
+      data = await api("/api/list", { path });
+    } finally {
+      // The capacity request keeps navigation locked without covering the list.
+      hideContentLoading();
+    }
     if (cwd !== data.path && nameFilter) {
       nameFilter = "";
       updateNameFilterButton();
@@ -2385,22 +2400,23 @@ async function load(path, scrollTop, force, alertOnError, historyMode, rescan) {
     savePath(cwd);
     if (historyMode === "seed") seedHistoryPath(cwd);
     else if (historyMode) writeHistoryPath(cwd, historyMode === "replace");
-    refreshSpaces(rescan);
     entries = data.entries.sort(compareEntries);
     selected.clear();
     focusedPath = null;
     render();
     if (shouldScrollTop) resetScrollTop();
+    storageRemoved = await refreshSpaces(rescan);
     setStatus(t("totalItems", { count: entries.length }));
     return true;
   } catch (err) {
     setStatus(err.message);
-    if (rescan) refreshSpaces(true);
+    if (rescan) storageRemoved = await refreshSpaces(true);
     if (alertOnError && err.code !== "smb_password_canceled") alert(err.message);
     return false;
   } finally {
     loadingPath = null;
-    hideContentLoading();
+    updateButtons();
+    if (storageRemoved && !spaceNavigationLocked()) await load("/", undefined, true, true, "replace");
   }
 }
 
@@ -2824,9 +2840,8 @@ async function pollTasksOnce() {
       return;
     }
     if (shouldRefresh) {
-      if (taskBecameIdle) startContentLoadingTimer();
       clearSelection(false);
-      if (!await load(taskRefreshPath || cwd, false)) await refreshSpaces();
+      if (!await load(taskRefreshPath || cwd, false) && !loadingPath) await refreshSpaces();
     }
   } catch (err) {
     const message = t("tasksPollFailed", { error: err.message });

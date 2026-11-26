@@ -24,7 +24,6 @@ struct net_dir {
   char path[PATH_MAX];
   net_entry_t *items;
   size_t count, capacity, position;
-  struct dirent entry;
   struct stat self;
   int found;
   struct net_dir *next;
@@ -510,12 +509,9 @@ net_dir_t *net_opendir(const char *path) {
   pthread_mutex_lock(&registry_lock); dir->next=directories; directories=dir; pthread_mutex_unlock(&registry_lock);
   return dir;
 }
-struct dirent *net_readdir(net_dir_t *dir) {
+const char *net_readdir_name(net_dir_t *dir) {
   if(dir->position==dir->count)return NULL;
-  net_entry_t *entry=&dir->items[dir->position++];
-  memset(&dir->entry,0,sizeof(dir->entry)); strcpy(dir->entry.d_name,entry->name);
-  dir->entry.d_type=S_ISDIR(entry->st.st_mode)?DT_DIR:S_ISLNK(entry->st.st_mode)?DT_LNK:DT_REG;
-  return &dir->entry;
+  return dir->items[dir->position++].name;
 }
 void net_closedir(net_dir_t *dir) {
   pthread_mutex_lock(&registry_lock);

@@ -245,6 +245,28 @@ mode_access(const char *path, int mode) {
   return stat(path, &st) ? -1 : mode_access_stat(&st, mode);
 }
 
+int
+open_temp_file(const char *target, char *temp, size_t size) {
+  char parent[PATH_MAX], name[80];
+  long long now = (long long)time(NULL);
+
+  temp[0] = '\0';
+  if(path_dirname(target, parent, sizeof(parent))) {
+    errno = ENAMETOOLONG;
+    return -1;
+  }
+  for(int attempt = 0; attempt < 32; attempt++) {
+    snprintf(name, sizeof(name), ".wfm-%ld-%lld-%d.tmp", (long)getpid(), now, attempt);
+    if(path_join(temp, size, parent, name)) break;
+    int fd = open(temp, O_WRONLY | O_CREAT | O_EXCL, 0600);
+    if(fd >= 0) return fd;
+    if(errno != EEXIST) break;
+    usbntfs_clear_error();
+  }
+  temp[0] = '\0';
+  return -1;
+}
+
 static int
 probe_dir_writable(const char *path) {
   char name[80];

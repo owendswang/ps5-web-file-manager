@@ -417,8 +417,6 @@ filemgr_upload_begin(struct MHD_Connection *conn, void **upload_ctx) {
   char error[128] = {0};
   char code[64] = {0};
   char arg[PATH_MAX + 96] = {0};
-  int n;
-
   *upload_ctx = NULL;
   if(!(ctx = calloc(1, sizeof(*ctx)))) {
     free(base); free(rel); free(overwrite); free(size_text);
@@ -492,16 +490,8 @@ filemgr_upload_begin(struct MHD_Connection *conn, void **upload_ctx) {
     ctx->error = errno ? errno : ENOSPC;
     goto fail;
   }
-  ctx->stage = "creating temporary path";
-  n = snprintf(ctx->temp, sizeof(ctx->temp), "%s.wfm-upload-%ld-%lld.tmp",
-               ctx->target, (long)getpid(), (long long)time(NULL));
-  if(n < 0 || (size_t)n >= sizeof(ctx->temp)) {
-    ctx->failed = 1;
-    ctx->error = ENAMETOOLONG;
-    goto fail;
-  }
   ctx->stage = "opening temporary file";
-  ctx->fd = open(ctx->temp, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+  ctx->fd = open_temp_file(ctx->target, ctx->temp, sizeof(ctx->temp));
   if(ctx->fd < 0) {
     ctx->failed = 1;
     ctx->error = errno;

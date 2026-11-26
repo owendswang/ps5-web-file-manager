@@ -405,6 +405,11 @@ button:disabled,
   pointer-events: none;
 }
 
+.shell.quiet-loading button:disabled:not(.action-unavailable),
+.shell.quiet-loading .parent-nav-button:disabled:not(.action-unavailable) img {
+  opacity: 1;
+}
+
 .danger {
   border-color: #8f4545;
   background: #402326;

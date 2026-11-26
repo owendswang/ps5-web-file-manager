@@ -1,6 +1,5 @@
 #pragma once
 
-#include <dirent.h>
 #include <stdint.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -19,7 +18,7 @@ int usbntfs_stat(const char *path, struct stat *st);
 int usbntfs_statvfs(const char *path, struct statvfs *st);
 typedef struct usbntfs_dir usbntfs_dir_t;
 usbntfs_dir_t *usbntfs_opendir(const char *path);
-struct dirent *usbntfs_readdir(usbntfs_dir_t *dir);
+const char *usbntfs_readdir_name(usbntfs_dir_t *dir);
 int usbntfs_closedir(usbntfs_dir_t *dir);
 int usbntfs_open(const char *path, int flags);
 int usbntfs_close(int fd);

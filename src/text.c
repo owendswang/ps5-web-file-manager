@@ -8,7 +8,6 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
-#include <time.h>
 #include <unistd.h>
 
 #include "json_util.h"
@@ -334,22 +333,11 @@ api_text_create(struct MHD_Connection *conn) {
 static int
 write_text_atomic(const char *path, const char *body, size_t body_size,
                   mode_t mode) {
-  struct timespec now;
   char temp[PATH_MAX];
-  int fd = -1;
+  int fd = open_temp_file(path, temp, sizeof(temp));
   int ret = -1;
-  int n;
 
-  clock_gettime(CLOCK_MONOTONIC, &now);
-  n = snprintf(temp, sizeof(temp), "%s.wfm-%ld-%ld.tmp", path,
-               (long)getpid(), now.tv_nsec);
-  if(n < 0 || (size_t)n >= sizeof(temp)) {
-    errno = ENAMETOOLONG;
-    return -1;
-  }
-  if((fd = open(temp, O_WRONLY | O_CREAT | O_EXCL, 0600)) < 0) {
-    return -1;
-  }
+  if(fd < 0) return -1;
   wfm_set_transfer_size(fd, body_size);
   if(transfer_write_all(NULL, fd, path, body, body_size, NULL)) goto done;
   if(fchmod(fd, mode & 07777) && !ignore_chmod_error(errno)) {

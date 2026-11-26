@@ -1,4 +1,3 @@
-#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -112,44 +111,56 @@ tar_split_name(const char *name, char *out_name, size_t out_name_size,
       return 0;
     }
   }
-  errno = ENAMETOOLONG;
   return -1;
+}
+
+static void
+tar_write_header(char *header, const char *name, const char *prefix,
+                 unsigned int mode, unsigned long long size,
+                 unsigned long long mtime, char type) {
+  memcpy(header, name, strlen(name));
+  snprintf(header + 100, 8, "%07o", mode);
+  snprintf(header + 108, 8, "%07o", 0);
+  snprintf(header + 116, 8, "%07o", 0);
+  snprintf(header + 124, 12, "%011llo", size);
+  snprintf(header + 136, 12, "%011llo", mtime);
+  header[156] = type;
+  memcpy(header + 257, "ustar", 5);
+  memcpy(header + 263, "00", 2);
+  if(prefix) {
+    memcpy(header + 345, prefix, strlen(prefix));
+  }
+  tar_checksum(header);
 }
 
 static int
 tar_queue_header(tar_stream_t *s, const char *name, const struct stat *st,
                  char type) {
-  char header[512];
-  char tar_name[100];
-  char prefix[155];
+  char tar_name[100], prefix[155];
   unsigned int mode = (unsigned int)(st->st_mode & 07777);
   unsigned long long size = type == '0' ? (unsigned long long)st->st_size : 0;
-  long long mtime = (long long)st->st_mtime;
+  unsigned long long mtime = (unsigned long long)st->st_mtime;
+  size_t record = 0, extended = 0;
 
   if(tar_split_name(name, tar_name, sizeof(tar_name), prefix, sizeof(prefix))) {
-    return -1;
+    /* A PAX record starts with its own byte length, including those digits. */
+    record = strlen(name) + sizeof(" path=\n");
+    for(size_t limit = 10; record >= limit; limit *= 10) record++;
+    extended = 512 + (record + 511) / 512 * 512;
+    strcpy(tar_name, type == '5' ? "entry/" : "entry");
+    prefix[0] = 0;
   }
-  memset(header, 0, sizeof(header));
-  memcpy(header, tar_name, strlen(tar_name));
-  snprintf(header + 100, 8, "%07o", mode);
-  snprintf(header + 108, 8, "%07o", 0);
-  snprintf(header + 116, 8, "%07o", 0);
-  snprintf(header + 124, 12, "%011llo", size);
-  snprintf(header + 136, 12, "%011llo", (unsigned long long)mtime);
-  header[156] = type;
-  memcpy(header + 257, "ustar", 5);
-  memcpy(header + 263, "00", 2);
-  if(prefix[0]) {
-    memcpy(header + 345, prefix, strlen(prefix));
-  }
-  tar_checksum(header);
-  s->pending = malloc(sizeof(header));
+  s->pending = calloc(1, extended + 512);
   if(!s->pending) {
     errno = ENOMEM;
     return -1;
   }
-  memcpy(s->pending, header, sizeof(header));
-  s->pending_size = sizeof(header);
+  if(extended) {
+    tar_write_header(s->pending, "PaxHeader", NULL, 0644, record, mtime, 'x');
+    snprintf(s->pending + 512, record + 1, "%zu path=%s\n", record, name);
+  }
+  tar_write_header(s->pending + extended, tar_name, prefix, mode, size, mtime, type);
+  s->pending_size = extended + 512;
   s->pending_offset = 0;
   return 0;
 }
@@ -252,7 +263,7 @@ tar_prepare_next(tar_stream_t *s) {
     }
     if(s->stack) {
       tar_frame_t *frame = s->stack;
-      struct dirent *entry;
+      const char *name;
       struct stat st;
 
       if(!frame->header_sent) {
@@ -263,16 +274,15 @@ tar_prepare_next(tar_stream_t *s) {
         }
         return 0;
       }
-      while((entry = readdir(frame->dir))) {
+      while((name = wfm_readdir_name(frame->dir))) {
         char child[PATH_MAX];
         char child_name[PATH_MAX];
 
-        if(!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+        if(!strcmp(name, ".") || !strcmp(name, "..")) {
           continue;
         }
-        if(path_join(child, sizeof(child), frame->path, entry->d_name) ||
-           path_join(child_name, sizeof(child_name), frame->name,
-                     entry->d_name) ||
+        if(path_join(child, sizeof(child), frame->path, name) ||
+           path_join(child_name, sizeof(child_name), frame->name, name) ||
            tar_start_path(s, child, child_name)) {
           return -1;
         }

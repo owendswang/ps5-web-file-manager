@@ -18,7 +18,8 @@ int wfm_lstat(const char *path, struct stat *st);
 int wfm_fstat(int fd, struct stat *st);
 int wfm_statvfs(const char *path, struct statvfs *st);
 wfm_dir_t *wfm_opendir(const char *path);
-struct dirent *wfm_readdir(wfm_dir_t *dir);
+/* Borrowed name, valid until the next read on this directory or close. */
+const char *wfm_readdir_name(wfm_dir_t *dir);
 /* Sticky enumeration error; EOF leaves this at zero. */
 int wfm_dir_error(wfm_dir_t *dir);
 int wfm_closedir(wfm_dir_t *dir);
@@ -48,7 +49,6 @@ void wfm_set_transfer_size(int fd, uint64_t size);
 #define fstat(...) wfm_fstat(__VA_ARGS__)
 #define statvfs(...) wfm_statvfs(__VA_ARGS__)
 #define opendir(...) wfm_opendir(__VA_ARGS__)
-#define readdir(...) wfm_readdir(__VA_ARGS__)
 #define closedir(...) wfm_closedir(__VA_ARGS__)
 #define open(...) wfm_open(__VA_ARGS__)
 #define close(...) wfm_close(__VA_ARGS__)

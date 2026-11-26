@@ -117,7 +117,6 @@ typedef struct task_completion {
 } task_completion_t;
 
 static int ensure_copy_dir(const char *path);
-static int open_copy_temp(const char *dst, char *temp, size_t temp_size);
 
 static task_completion_t g_last_completion;
 #ifndef __linux__
@@ -305,19 +304,19 @@ count_dir_bytes_sync(file_task_t *task, const char *path, const char *display,
                      unsigned long long *total, size_t *file_count,
                      size_t *dir_count, const char *alias_probe) {
   DIR *dir = opendir(path);
-  struct dirent *entry;
+  const char *name;
   int ret = -1;
 
   if(!dir) {
     return -1;
   }
-  while((entry = readdir(dir))) {
+  while((name = wfm_readdir_name(dir))) {
     char child[PATH_MAX];
     char display_child[PATH_MAX];
-    if(!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+    if(!strcmp(name, ".") || !strcmp(name, "..")) {
       continue;
     }
-    if(alias_probe && !strcmp(entry->d_name, alias_probe)) {
+    if(alias_probe && !strcmp(name, alias_probe)) {
       task_set_error_code(task, "destination_inside_source", NULL);
       errno = ELOOP;
       goto done;
@@ -325,9 +324,8 @@ count_dir_bytes_sync(file_task_t *task, const char *path, const char *display,
     if(task && task_cancel_requested(task)) {
       goto done;
     }
-    if(path_join(child, sizeof(child), path, entry->d_name) ||
-       (display && path_join(display_child, sizeof(display_child), display,
-                             entry->d_name)) ||
+    if(path_join(child, sizeof(child), path, name) ||
+       (display && path_join(display_child, sizeof(display_child), display, name)) ||
        count_path_bytes_sync(task, child, display ? display_child : NULL,
                              total, file_count, dir_count, alias_probe)) {
       goto done;
@@ -377,35 +375,6 @@ count_task_path_bytes(file_task_t *task, const char *path, const char *display,
 }
 
 static int
-open_copy_temp(const char *dst, char *temp, size_t temp_size) {
-  char parent[PATH_MAX];
-  char name[96];
-  int attempt;
-
-  if(path_dirname(dst, parent, sizeof(parent))) {
-    return -1;
-  }
-  for(attempt = 0; attempt < 32; attempt++) {
-    int fd;
-
-    snprintf(name, sizeof(name), ".wfm-copy-%ld-%lld-%d.tmp",
-             (long)getpid(), (long long)time(NULL), attempt);
-    if(path_join(temp, temp_size, parent, name)) {
-      return -1;
-    }
-    fd = open(temp, O_WRONLY | O_CREAT | O_EXCL, 0600);
-    if(fd >= 0) {
-      return fd;
-    }
-    if(errno != EEXIST) {
-      return -1;
-    }
-  }
-  errno = EEXIST;
-  return -1;
-}
-
-static int
 count_transfer_source(file_task_t *task, const char *src, const char *dst,
                        unsigned long long *total, size_t *files, size_t *dirs) {
   if(!net_path(src) && !net_path(dst))
@@ -420,7 +389,7 @@ count_transfer_source(file_task_t *task, const char *src, const char *dst,
     if(exists && S_ISDIR(target.st_mode) &&
        path_join(marker_target, sizeof(marker_target), dst, ".probe")) return -1;
   }
-  int fd = open_copy_temp(marker_target, temp, sizeof(temp));
+  int fd = open_temp_file(marker_target, temp, sizeof(temp));
   if(fd < 0) return -1;
   int result = close(fd);
   if(!result) {
@@ -468,7 +437,7 @@ copy_file(file_task_t *task, const char *src, const char *dst) {
   if((in = open(src, O_RDONLY)) < 0) {
     goto done;
   }
-  if((out = open_copy_temp(dst, temp, sizeof(temp))) < 0) {
+  if((out = open_temp_file(dst, temp, sizeof(temp))) < 0) {
     goto done;
   }
   if(fstat(in, &st)) goto done;
@@ -553,7 +522,7 @@ check_remove_entry_writable(const char *path) {
 static int
 check_remove_dir_writable(file_task_t *task, const char *path) {
   DIR *dir;
-  struct dirent *entry;
+  const char *name;
   int ret = -1;
 
   if(mode_access(path, R_OK | W_OK | X_OK)) {
@@ -564,16 +533,16 @@ check_remove_dir_writable(file_task_t *task, const char *path) {
     task_update(task, TASK_RUNNING, path, 0, NULL);
     return -1;
   }
-  while((entry = readdir(dir))) {
+  while((name = wfm_readdir_name(dir))) {
     char child[PATH_MAX];
 
-    if(!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+    if(!strcmp(name, ".") || !strcmp(name, "..")) {
       continue;
     }
     if(task_cancel_requested(task)) {
       goto done;
     }
-    if(path_join(child, sizeof(child), path, entry->d_name) ||
+    if(path_join(child, sizeof(child), path, name) ||
        check_remove_path_writable(task, child)) {
       goto done;
     }
@@ -622,7 +591,7 @@ finish_copied_move(file_task_t *task, const char *src) {
 static int
 copy_dir(file_task_t *task, const char *src, const char *dst) {
   DIR *dir;
-  struct dirent *entry;
+  const char *name;
   int ret = -1;
 
   task_update(task, TASK_RUNNING, dst, 0, NULL);
@@ -637,18 +606,18 @@ copy_dir(file_task_t *task, const char *src, const char *dst) {
     return -1;
   }
 
-  while((entry = readdir(dir))) {
+  while((name = wfm_readdir_name(dir))) {
     char from[PATH_MAX];
     char to[PATH_MAX];
 
-    if(!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+    if(!strcmp(name, ".") || !strcmp(name, "..")) {
       continue;
     }
     if(task_cancel_requested(task)) {
       goto done;
     }
-    if(path_join(from, sizeof(from), src, entry->d_name) ||
-       path_join(to, sizeof(to), dst, entry->d_name) ||
+    if(path_join(from, sizeof(from), src, name) ||
+       path_join(to, sizeof(to), dst, name) ||
        copy_path(task, from, to)) {
       goto done;
     }
@@ -734,20 +703,20 @@ remove_path(file_task_t *task, const char *path) {
   }
   if(S_ISDIR(st.st_mode)) {
     DIR *dir = opendir(path);
-    struct dirent *entry;
+    const char *name;
     if(!dir) {
       return -1;
     }
-    while((entry = readdir(dir))) {
+    while((name = wfm_readdir_name(dir))) {
       char child[PATH_MAX];
-      if(!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+      if(!strcmp(name, ".") || !strcmp(name, "..")) {
         continue;
       }
       if(task_cancel_requested(task)) {
         closedir(dir);
         return -1;
       }
-      if(path_join(child, sizeof(child), path, entry->d_name) ||
+      if(path_join(child, sizeof(child), path, name) ||
          remove_path(task, child)) {
         closedir(dir);
         return -1;
@@ -1741,20 +1710,20 @@ chmod_task_path(file_task_t *task, const char *path,
   }
   if(recursive && S_ISDIR(st.st_mode)) {
     DIR *dir = opendir(path);
-    struct dirent *entry;
+    const char *name;
 
     if(!dir) {
       return -1;
     }
-    while((entry = readdir(dir))) {
+    while((name = wfm_readdir_name(dir))) {
       char child[PATH_MAX];
       int error;
 
-      if(!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+      if(!strcmp(name, ".") || !strcmp(name, "..")) {
         continue;
       }
       if(task_cancel_requested(task) ||
-         path_join(child, sizeof(child), path, entry->d_name) ||
+         path_join(child, sizeof(child), path, name) ||
          lstat(child, &st)) {
         error = errno;
         closedir(dir);

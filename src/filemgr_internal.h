@@ -103,6 +103,7 @@ int ensure_parent_dirs(const char *base, const char *rel);
 int chmod_path_mode(const char *path, unsigned int mode);
 int chmod_path_0777(const char *path);
 int fchmod_0777(int fd);
+int open_temp_file(const char *target, char *temp, size_t size);
 int ignore_chmod_error(int err);
 int mode_access(const char *path, int mode);
 int check_target_writable(const char *target, char ***checked_dirs,

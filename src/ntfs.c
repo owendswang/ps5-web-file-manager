@@ -58,15 +58,9 @@ typedef struct {
   off_t position;
   int flags;
 } usb_file_t;
-typedef struct {
-  char *name;
-  ino_t inode;
-  unsigned type;
-} usb_entry_t;
 struct usbntfs_dir {
-  usb_entry_t *entries;
+  char **names;
   size_t count, index, capacity;
-  struct dirent entry;
 };
 static usb_volume_t volumes[NTFS_VOLUMES];
 static usb_file_t files[NTFS_FILES];
@@ -553,18 +547,18 @@ void usbntfs_spaces(strbuf_t *b,const char *current,int *first,int rescan) {
 }
 static int fill_directory(void *context,const ntfschar *name,int len,int kind,s64 position,MFT_REF ref,unsigned type) {
   (void)position;
+  (void)type;
   usbntfs_dir_t *dir=context;
   if(kind==FILE_NAME_DOS || MREF(ref)<FILE_first_user)return 0;
   char *utf8=NULL;
   if(ntfs_ucstombs(name,len,&utf8,0)<0)return -1;
-  if(strlen(utf8)>=sizeof(((struct dirent *)0)->d_name)) { free(utf8); errno=ENAMETOOLONG; return -1; }
   if(dir->count==dir->capacity) {
     size_t capacity=dir->capacity?dir->capacity*2:32;
-    usb_entry_t *entries=realloc(dir->entries,capacity*sizeof(*entries));
-    if(!entries) { free(utf8); return -1; }
-    dir->entries=entries; dir->capacity=capacity;
+    char **names=realloc(dir->names,capacity*sizeof(*names));
+    if(!names) { free(utf8); return -1; }
+    dir->names=names; dir->capacity=capacity;
   }
-  dir->entries[dir->count++]=(usb_entry_t){utf8,MREF(ref),type==NTFS_DT_DIR?DT_DIR:DT_REG};
+  dir->names[dir->count++]=utf8;
   return 0;
 }
 usbntfs_dir_t *usbntfs_opendir(const char *path) {
@@ -587,17 +581,13 @@ usbntfs_dir_t *usbntfs_opendir(const char *path) {
   }
   pthread_mutex_unlock(&lock); return dir;
 }
-struct dirent *usbntfs_readdir(usbntfs_dir_t *dir) {
+const char *usbntfs_readdir_name(usbntfs_dir_t *dir) {
   if(dir->index==dir->count)return NULL;
-  usb_entry_t *entry=&dir->entries[dir->index++];
-  memset(&dir->entry,0,sizeof(dir->entry));
-  strcpy(dir->entry.d_name,entry->name);
-  dir->entry.d_ino=entry->inode; dir->entry.d_type=entry->type;
-  return &dir->entry;
+  return dir->names[dir->index++];
 }
 int usbntfs_closedir(usbntfs_dir_t *dir) {
-  for(size_t i=0;i<dir->count;i++)free(dir->entries[i].name);
-  free(dir->entries); free(dir); return 0;
+  for(size_t i=0;i<dir->count;i++)free(dir->names[i]);
+  free(dir->names); free(dir); return 0;
 }
 
 /* The caller holds the library lock. Metadata inodes must never be mutated. */
@@ -612,11 +602,32 @@ static ntfs_inode *parent_inode(usb_volume_t *v,const char *rel,ntfschar **name,
   if(ni && ni->mft_no==FILE_Extend) { ntfs_inode_close(ni); errno=EPERM; return NULL; }
   return ni;
 }
+/* Look up the UTF-16 name in the directory index using the volume's upcase table.
+ * Keep regular path lookups case-sensitive, including for existing collisions. */
+static int check_new_name(ntfs_inode *parent,const ntfschar *name,int len,const char *old_name) {
+  ntfs_volume *vol=parent->vol;
+  NVolClearCaseSensitive(vol);
+  u64 ref=ntfs_inode_lookup_by_name(parent,name,len);
+  NVolSetCaseSensitive(vol);
+  if(ref==(u64)-1)return errno==ENOENT?0:-1;
+  /* Renaming an entry within its own directory can keep the same folded name. */
+  if(old_name) {
+    ntfschar *old=NULL;
+    int old_len=ntfs_mbstoucs(old_name,&old);
+    int same=old_len>0 && ntfs_names_are_equal(old,old_len,name,len,IGNORE_CASE,
+                                                vol->upcase,vol->upcase_len);
+    free(old);
+    if(same)return 0;
+    if(old_len<0)return -1;
+  }
+  return fail("file_already_exists",EEXIST);
+}
 static ntfs_inode *create_inode(usb_volume_t *v,const char *rel,int directory) {
   ntfschar *name=NULL; int len;
   ntfs_inode *parent=parent_inode(v,rel,&name,&len),*ni=NULL;
   if(parent) {
-    ni=ntfs_create(parent,const_cpu_to_le32(0),name,(u8)len,directory?S_IFDIR:S_IFREG);
+    if(!check_new_name(parent,name,len,NULL))
+      ni=ntfs_create(parent,const_cpu_to_le32(0),name,(u8)len,directory?S_IFDIR:S_IFREG);
     int error=errno; if(ntfs_inode_close(parent) && ni) { ntfs_inode_close(ni); ni=NULL; error=errno; } errno=error;
   }
   free(name); return ni;
@@ -736,11 +747,18 @@ int usbntfs_remove(const char *path,int directory) {
   int result=v?remove_inode(v,rel,directory):-1;
   pthread_mutex_unlock(&lock); return result;
 }
-static int link_inode(usb_volume_t *v,const char *source,const char *target) {
+static int link_inode(usb_volume_t *v,const char *source,const char *target,int check_name) {
   ntfs_inode *ni=lookup(v,source,1); if(!ni)return -1;
   ntfschar *name=NULL; int len;
   ntfs_inode *parent=parent_inode(v,target,&name,&len);
-  int result=parent?ntfs_link(ni,parent,name,(u8)len):-1;
+  int result=-1;
+  if(parent) {
+    const char *old_name=path_basename(source),*new_name=path_basename(target);
+    size_t prefix=(size_t)(old_name-source);
+    if((size_t)(new_name-target)!=prefix || strncmp(source,target,prefix))old_name=NULL;
+    if(!check_name || !check_new_name(parent,name,len,old_name))
+      result=ntfs_link(ni,parent,name,(u8)len);
+  }
   int error=errno;
   if(parent && ntfs_inode_close(parent) && !result) { result=-1; error=errno; }
   if(ntfs_inode_close(ni) && !result) { result=-1; error=errno; }
@@ -770,15 +788,17 @@ int usbntfs_rename(const char *source,const char *target) {
     }
     ntfs_inode_close(ni);
     static unsigned sequence;
-    int n=snprintf(backup,sizeof(backup),"%s.wfm-ntfs-%u",dst,++sequence);
-    if(n<0 || (size_t)n>=sizeof(backup)) { errno=ENAMETOOLONG; goto done; }
+    char parent[PATH_MAX], name[32];
+    snprintf(name,sizeof(name),".wfm-ntfs-%u",++sequence);
+    if(path_dirname(dst,parent,sizeof(parent)) || path_join(backup,sizeof(backup),parent,name))goto done;
     ni=ntfs_pathname_to_inode(a->volume,NULL,backup);
     if(ni) { ntfs_inode_close(ni); errno=EEXIST; goto done; }
-    if(errno!=ENOENT || link_inode(a,dst,backup))goto done;
+    if(errno!=ENOENT || link_inode(a,dst,backup,1))goto done;
     if(remove_inode(a,dst,directory))goto done;
   } else if(errno!=ENOENT)goto done;
   /* Same link/unlink/rollback strategy as upstream ntfs_fuse_safe_rename. */
-  if(link_inode(a,src,dst))goto restore;
+  /* Replacing or restoring an exact name does not introduce a new name. */
+  if(link_inode(a,src,dst,!backup[0]))goto restore;
   if(remove_inode(a,src,directory)) {
     int error=errno; remove_inode(a,dst,directory); errno=error; goto restore;
   }
@@ -787,7 +807,7 @@ int usbntfs_rename(const char *source,const char *target) {
   goto done;
 restore: {
     int error=errno;
-    if(backup[0] && !link_inode(a,backup,dst))remove_inode(a,backup,directory);
+    if(backup[0] && !link_inode(a,backup,dst,0))remove_inode(a,backup,directory);
     errno=error;
   }
 done:
