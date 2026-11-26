@@ -94,3 +94,67 @@ api_list(struct MHD_Connection *conn) {
   strbuf_append(&b, "]}");
   return send_buffer(conn, MHD_HTTP_OK, b.data, "application/json");
 }
+
+/* Running folder size walk; a newer request or /api/size/cancel stops it. */
+static file_task_t *g_size_task;
+
+enum MHD_Result
+api_size(struct MHD_Connection *conn) {
+  char *path = fs_path_value(query_value(conn, "path"));
+  file_task_t *task;
+  unsigned long long total = 0;
+  size_t files = 0;
+  size_t dirs = 0;
+  strbuf_t b = {0};
+  int ret;
+  int error;
+
+  if(has_active_task()) {
+    free(path);
+    return send_json_error(conn, MHD_HTTP_CONFLICT, "another task is running");
+  }
+  if(!path) {
+    return send_json_error(conn, MHD_HTTP_BAD_REQUEST, "invalid path");
+  }
+  if(!(task = calloc(1, sizeof(*task)))) {
+    free(path);
+    return send_json_error(conn, MHD_HTTP_INTERNAL_SERVER_ERROR, "out of memory");
+  }
+
+  pthread_mutex_lock(&g_tasks_lock);
+  if(g_size_task) {
+    g_size_task->cancel_requested = 1;
+  }
+  g_size_task = task;
+  pthread_mutex_unlock(&g_tasks_lock);
+
+  ret = count_task_path_bytes(task, path, NULL, &total, &files, &dirs);
+  error = errno;
+
+  pthread_mutex_lock(&g_tasks_lock);
+  if(g_size_task == task) {
+    g_size_task = NULL;
+  }
+  pthread_mutex_unlock(&g_tasks_lock);
+  free(task);
+  free(path);
+
+  if(ret) {
+    errno = error;
+    return send_json_error(conn, MHD_HTTP_INTERNAL_SERVER_ERROR, NULL);
+  }
+  /* The walk also counts the requested folder itself. */
+  strbuf_printf(&b, "{\"ok\":true,\"size\":%llu,\"files\":%zu,\"dirs\":%zu}",
+                total, files, dirs ? dirs - 1 : 0);
+  return send_buffer(conn, MHD_HTTP_OK, b.data, "application/json");
+}
+
+enum MHD_Result
+api_size_cancel(struct MHD_Connection *conn) {
+  pthread_mutex_lock(&g_tasks_lock);
+  if(g_size_task) {
+    g_size_task->cancel_requested = 1;
+  }
+  pthread_mutex_unlock(&g_tasks_lock);
+  return send_json_ok(conn);
+}

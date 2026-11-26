@@ -2159,6 +2159,16 @@ filemgr_api_request(struct MHD_Connection *conn, const char *url,
   if(!strcmp(url, "/api/list")) return api_list(conn);
   if(!strcmp(url, "/api/tasks")) return api_tasks(conn);
   if(!strcmp(url, "/api/space")) return api_space(conn);
+  if(!strcmp(url, "/api/size")) {
+    return strcmp(method, MHD_HTTP_METHOD_GET) ?
+      send_json_error(conn, MHD_HTTP_METHOD_NOT_ALLOWED, "invalid method") :
+      api_size(conn);
+  }
+  if(!strcmp(url, "/api/size/cancel")) {
+    return strcmp(method, MHD_HTTP_METHOD_POST) ?
+      send_json_error(conn, MHD_HTTP_METHOD_NOT_ALLOWED, "invalid method") :
+      api_size_cancel(conn);
+  }
   if(!strcmp(url, "/api/smb/shares")) {
     return strcmp(method, MHD_HTTP_METHOD_POST) ?
       send_json_error(conn, MHD_HTTP_METHOD_NOT_ALLOWED, "invalid method") :

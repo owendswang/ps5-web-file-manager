@@ -31,6 +31,10 @@ let permissionBusy = false;
 let extractItems = [];
 let pkgInfoItem = null;
 let pkgInfoRequestId = 0;
+let infoItem = null;
+let infoRequestId = 0;
+let infoLoading = false;
+let infoCancelRequest = Promise.resolve();
 let downloadFrame = null;
 let downloadQueue = [];
 let downloadAck = 0;
@@ -128,6 +132,11 @@ const pkgInfoTitleEl = document.getElementById("pkgInfoTitle");
 const pkgInfoFieldsEl = document.getElementById("pkgInfoFields");
 const pkgInfoCloseBtn = document.getElementById("pkgInfoCloseBtn");
 const pkgInfoInstallBtn = document.getElementById("pkgInfoInstallBtn");
+const infoOverlayEl = document.getElementById("infoOverlay");
+const infoPathEl = document.getElementById("infoPath");
+const infoSizeEl = document.getElementById("infoSize");
+const infoContainsEl = document.getElementById("infoContains");
+const infoCloseBtn = document.getElementById("infoCloseBtn");
 const permissionOverlayEl = document.getElementById("permissionOverlay");
 const permissionPathEl = document.getElementById("permissionPath");
 const permissionModeEl = document.getElementById("permissionMode");
@@ -464,6 +473,10 @@ function formatBytes(size, decimals) {
   return (decimals ? value.toFixed(2) : Math.round(value)) + " " + units[unit];
 }
 
+function formatCount(value) {
+  return String(Number(value || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
 function formatTime(seconds) {
   if (!seconds) return "";
   const date = new Date(seconds * 1000);
@@ -755,7 +768,7 @@ function historyBlocked() {
     !contentLoadingEl.hidden || contentEl.classList.contains("loading") ||
     !textEditorOverlayEl.hidden || !imagePreviewOverlayEl.hidden ||
     !pkgInfoOverlayEl.hidden || !permissionOverlayEl.hidden ||
-    !extractOverlayEl.hidden || !aboutOverlayEl.hidden);
+    !extractOverlayEl.hidden || !aboutOverlayEl.hidden || !infoOverlayEl.hidden);
 }
 
 function savePath(path) {
@@ -1523,6 +1536,51 @@ function installPkgFromInfo() {
   installPkg(item);
 }
 
+async function actionInfo(item) {
+  if (item.type !== "d" || backgroundInteractionLocked()) return;
+  const requestId = ++infoRequestId;
+  infoItem = item;
+  setModalBackgroundLocked(true);
+  renderDialogItems(infoPathEl, [item]);
+  infoSizeEl.textContent = t("infoCalculating");
+  infoContainsEl.textContent = t("infoCalculating");
+  infoOverlayEl.hidden = false;
+  renderSingleDialogPath(infoPathEl, [item]);
+  infoCloseBtn.focus();
+  await infoCancelRequest;
+  if (requestId !== infoRequestId) return;
+  infoLoading = true;
+  try {
+    const data = await api("/api/size", { path: item.path }, { method: "GET" });
+    if (requestId !== infoRequestId) return;
+    infoSizeEl.textContent = t("infoSizeValue", {
+      size: formatBytes(data.size, true),
+      bytes: formatCount(data.size)
+    });
+    infoContainsEl.textContent = t("infoContainsValue", {
+      files: formatCount(data.files),
+      dirs: formatCount(data.dirs)
+    });
+  } catch (err) {
+    if (requestId !== infoRequestId) return;
+    infoSizeEl.textContent = err.message;
+    infoContainsEl.textContent = "";
+  } finally {
+    if (requestId === infoRequestId) infoLoading = false;
+  }
+}
+
+function closeInfo() {
+  infoRequestId++;
+  if (infoLoading) infoCancelRequest = api("/api/size/cancel").catch(() => {});
+  infoLoading = false;
+  infoOverlayEl.hidden = true;
+  infoItem = null;
+  infoPathEl.textContent = "";
+  infoPathEl.title = "";
+  setModalBackgroundLocked(false);
+}
+
 function permissionModeText(mode) {
   const octal = (Number(mode || 0) & 0x1ff).toString(8);
   return "0" + ("000" + octal).slice(-3);
@@ -2225,11 +2283,11 @@ function clearSelection(updateVisibleRows) {
   updateButtons();
 }
 
-const FILE_ACTIONS = { download: actionDownload, copy: actionCopy, move: actionMove, rename: actionRename, delete: actionDelete, favorite: actionFavorite };
+const FILE_ACTIONS = { download: actionDownload, copy: actionCopy, move: actionMove, rename: actionRename, delete: actionDelete, favorite: actionFavorite, info: actionInfo };
 
 function runRowAction(item, action) {
   if (backgroundInteractionLocked()) return;
-  if (action === actionFavorite) {
+  if (action === actionFavorite || action === actionInfo) {
     action(item);
     return;
   }
@@ -2289,7 +2347,7 @@ function render() {
     const tools = document.createElement("span");
     tools.className = "row-tools";
     for (const op of actions) {
-      if (op === "favorite" && item.type !== "d") continue;
+      if ((op === "favorite" || op === "info") && item.type !== "d") continue;
       const button = document.createElement("button");
       button.type = "button";
       button.className = "row-tool";
@@ -3302,6 +3360,7 @@ newTextBtn.addEventListener("click", actionNewText);
 imagePreviewCloseBtn.addEventListener("click", closeImagePreview);
 pkgInfoCloseBtn.addEventListener("click", closePkgInfo);
 pkgInfoInstallBtn.addEventListener("click", installPkgFromInfo);
+infoCloseBtn.addEventListener("click", closeInfo);
 pkgInfoImageEl.addEventListener("error", () => {
   if (pkgInfoImageEl.getAttribute("src") !== "/icon-pkg.png") {
     pkgInfoImageEl.src = "/icon-pkg.png";
@@ -3333,6 +3392,7 @@ window.addEventListener("resize", () => {
   renderAddressPath();
   renderSinglePermissionPath();
   renderSingleExtractPath();
+  if (!infoOverlayEl.hidden) renderSingleDialogPath(infoPathEl, [infoItem]);
 });
 window.addEventListener("beforeunload", event => {
   if (!historyBlocked()) return;
@@ -3365,6 +3425,10 @@ window.addEventListener("popstate", event => {
     }
     if (!pkgInfoOverlayEl.hidden) {
       closePkgInfo();
+      return;
+    }
+    if (!infoOverlayEl.hidden) {
+      closeInfo();
       return;
     }
     setStatus(t("activeTask"));
@@ -3412,6 +3476,7 @@ document.addEventListener("keydown", event => {
   else if (!extractOverlayEl.hidden) closeExtractDialog();
   else if (!permissionOverlayEl.hidden) requestClosePermissionDialog();
   else if (!pkgInfoOverlayEl.hidden) closePkgInfo();
+  else if (!infoOverlayEl.hidden) closeInfo();
   else if (!imagePreviewOverlayEl.hidden) closeImagePreview();
   else if (!textEditorOverlayEl.hidden) requestCloseTextEditor();
   else handled = false;
@@ -3432,6 +3497,7 @@ for (const [overlay, close] of [
   [textEditorOverlayEl, requestCloseTextEditor],
   [imagePreviewOverlayEl, closeImagePreview],
   [pkgInfoOverlayEl, closePkgInfo],
+  [infoOverlayEl, closeInfo],
   [permissionOverlayEl, requestClosePermissionDialog],
   [extractOverlayEl, closeExtractDialog]
 ]) {
