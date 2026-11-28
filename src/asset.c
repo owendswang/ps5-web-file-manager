@@ -50,10 +50,11 @@ static asset_t* g_asset_head = 0;
 
 
 static  void
-asset_normalize_path(const char *url, char* path) {
+asset_normalize_path(const char *url, char* path, size_t size) {
   char* ptr = path;
+  char* limit = path + size - 1;
 
-  for(size_t i=0; i<strlen(url); i++) {
+  for(size_t i=0; i<strlen(url) && ptr < limit; i++) {
     if(url[i] == '/' && url[i+1] == '/') {
       continue;
     }
@@ -92,7 +93,7 @@ asset_request(struct MHD_Connection *conn, const char* url) {
   const char* encoding = 0;
   char path[PATH_MAX];
 
-  asset_normalize_path(url, path);
+  asset_normalize_path(url, path, sizeof(path));
   for(asset_t* a=g_asset_head; a!=0; a=a->next) {
     if(!strcmp(path, a->path)) {
       data = a->data;
